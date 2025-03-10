@@ -6,14 +6,19 @@ const { Client } = require("@line/bot-sdk");
 const app = express();
 app.use(express.json());
 
+// LINE Messaging API 設定
 const lineClient = new Client({
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
   channelSecret: process.env.LINE_SECRET,
 });
 
+// DeepSeek API Key
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+
+// 群組設定（產業類別和翻譯語言）
 const groupSettings = {};
 
+// Webhook 處理
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
   console.log("Received events:", JSON.stringify(events, null, 2));
@@ -34,10 +39,10 @@ app.post("/webhook", async (req, res) => {
           const groupId = event.source.groupId;
           const userMessage = event.message.text;
 
-          if (!groupSettings[groupId]) {
+          if (!groupSettings[groupId] || !groupSettings[groupId].targetLang || !groupSettings[groupId].industry) {
             await lineClient.replyMessage(event.replyToken, {
               type: "text",
-              text: "請先設定產業類別和翻譯語言！",
+              text: "請先完成產業類別和翻譯語言的設定！",
             });
             return;
           }
@@ -46,14 +51,6 @@ app.post("/webhook", async (req, res) => {
             await lineClient.replyMessage(event.replyToken, {
               type: "text",
               text: userMessage,
-            });
-            return;
-          }
-
-          if (!groupSettings[groupId].targetLang || !groupSettings[groupId].industry) {
-            await lineClient.replyMessage(event.replyToken, {
-              type: "text",
-              text: "請完成產業類別和翻譯語言的設定！",
             });
             return;
           }
@@ -68,6 +65,7 @@ app.post("/webhook", async (req, res) => {
             type: "text",
             text: `【${groupSettings[groupId].targetLang}】${translatedText}`,
           });
+          console.log("Reply sent:", translatedText);
           return;
         }
 
@@ -91,15 +89,18 @@ app.post("/webhook", async (req, res) => {
               type: "text",
               text: `已設定產業類別為：${industry}`,
             });
+            console.log("Group settings updated:", groupSettings[groupId]);
           } else if (action === "setLanguage") {
             const language = params.get("language");
             groupSettings[groupId] = groupSettings[groupId] || { translate: "on" };
             groupSettings[groupId].targetLang = language;
             if (language === "off") groupSettings[groupId].translate = "off";
+            else groupSettings[groupId].translate = "on";
             await lineClient.replyMessage(event.replyToken, {
               type: "text",
               text: `已設定翻譯語言為：${language}`,
             });
+            console.log("Group settings updated:", groupSettings[groupId]);
           }
         }
       })
@@ -111,6 +112,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+// 發送歡迎訊息和選單
 async function sendWelcomeMessage(groupId) {
   const flexMessage = {
     type: "flex",
@@ -146,8 +148,10 @@ async function sendWelcomeMessage(groupId) {
     },
   };
   await lineClient.pushMessage(groupId, flexMessage);
+  console.log("Welcome message sent to group:", groupId);
 }
 
+// 發送產業類別選單
 async function sendIndustrySelectionMenu(groupId) {
   const flexMessage = {
     type: "flex",
@@ -168,18 +172,66 @@ async function sendIndustrySelectionMenu(groupId) {
             },
             margin: "md",
           },
-          // 其他產業按鈕...
+          {
+            type: "button",
+            action: {
+              type: "postback",
+              label: "紡織業",
+              data: `action=setIndustry&groupId=${groupId}&industry=紡織業`,
+            },
+            margin: "md",
+          },
+          {
+            type: "button",
+            action: {
+              type: "postback",
+              label: "CNC",
+              data: `action=setIndustry&groupId=${groupId}&industry=CNC`,
+            },
+            margin: "md",
+          },
+          {
+            type: "button",
+            action: {
+              type: "postback",
+              label: "畜牧業",
+              data: `action=setIndustry&groupId=${groupId}&industry=畜牧業`,
+            },
+            margin: "md",
+          },
+          {
+            type: "button",
+            action: {
+              type: "postback",
+              label: "農業",
+              data: `action=setIndustry&groupId=${groupId}&industry=農業`,
+            },
+            margin: "md",
+          },
+          {
+            type: "button",
+            action: {
+              type: "postback",
+              label: "一般傳產",
+              data: `action=setIndustry&groupId=${groupId}&industry=一般傳產`,
+            },
+            margin: "md",
+          },
         ],
       },
     },
   };
   await lineClient.pushMessage(groupId, flexMessage);
+  console.log("Industry selection menu sent to group:", groupId);
 }
 
+// 偵測群組成員語言（簡化版）
 async function detectGroupMemberLanguages(groupId) {
-  return ["繁體中文", "英文"]; // 簡化測試用
+  // 這裡使用固定語言列表進行測試，實際應用中可根據需求實現
+  return ["繁體中文", "英文", "越南語", "泰國語"];
 }
 
+// 發送翻譯語言選單
 async function sendLanguageSelectionMenu(groupId, languages) {
   const buttons = languages.map((language) => ({
     type: "button",
@@ -216,8 +268,10 @@ async function sendLanguageSelectionMenu(groupId, languages) {
     },
   };
   await lineClient.pushMessage(groupId, flexMessage);
+  console.log("Language selection menu sent to group:", groupId);
 }
 
+// DeepSeek 翻譯函數（加入產業類別上下文）
 async function translateWithDeepSeek(text, targetLang, industry) {
   const apiUrl = "https://api.deepseek.com/v1/chat/completions";
   try {
@@ -245,9 +299,13 @@ async function translateWithDeepSeek(text, targetLang, industry) {
     return result;
   } catch (error) {
     console.error("Translation API error:", error.response?.data || error.message);
+    if (error.response?.data?.error?.message === "Insufficient Balance") {
+      return "翻譯失敗：API 餘額不足，請聯繫管理員充值。";
+    }
     return "翻譯失敗，請稍後再試";
   }
 }
 
+// 啟動伺服器
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`🚀 伺服器正在運行，埠號：${port}`));
