@@ -21,6 +21,9 @@ const groupSettings = {};
 // 翻譯結果快取
 const translationCache = new Map();
 
+// 已處理的 replyToken 集合
+const processedReplyTokens = new Set();
+
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
@@ -29,6 +32,12 @@ app.post("/webhook", async (req, res) => {
   try {
     await Promise.all(
       events.map(async (event) => {
+        if (event.replyToken && processedReplyTokens.has(event.replyToken)) {
+          console.log("Skipping duplicate replyToken:", event.replyToken);
+          return;
+        }
+        if (event.replyToken) processedReplyTokens.add(event.replyToken);
+
         // 處理加入群組事件
         if (event.type === "join") {
           const groupId = event.source.groupId;
@@ -41,6 +50,7 @@ app.post("/webhook", async (req, res) => {
         if (event.type === "message" && event.message.type === "text") {
           const groupId = event.source.groupId;
           const userMessage = event.message.text;
+          const replyToken = event.replyToken;
 
           // 檢查是否為設定指令
           if (userMessage === "更改設定" || userMessage === "查看設定") {
@@ -49,7 +59,7 @@ app.post("/webhook", async (req, res) => {
           }
 
           if (!groupSettings[groupId] || !groupSettings[groupId].targetLang || !groupSettings[groupId].industry) {
-            await lineClient.replyMessage(event.replyToken, {
+            await lineClient.replyMessage(replyToken, {
               type: "text",
               text: "請先完成產業類別和翻譯語言的設定！",
             });
@@ -57,7 +67,7 @@ app.post("/webhook", async (req, res) => {
           }
 
           if (groupSettings[groupId].translate === "off") {
-            await lineClient.replyMessage(event.replyToken, {
+            await lineClient.replyMessage(replyToken, {
               type: "text",
               text: userMessage,
             });
@@ -70,7 +80,7 @@ app.post("/webhook", async (req, res) => {
             groupSettings[groupId].industry
           );
 
-          await lineClient.replyMessage(event.replyToken, {
+          await lineClient.replyMessage(replyToken, {
             type: "text",
             text: `【${groupSettings[groupId].targetLang}】${translatedText}`,
           });
@@ -160,8 +170,12 @@ async function sendWelcomeMessage(groupId) {
       },
     },
   };
-  await lineClient.pushMessage(groupId, flexMessage);
-  console.log("Welcome message sent to group:", groupId);
+  try {
+    await lineClient.pushMessage(groupId, flexMessage);
+    console.log("Welcome message sent to group:", groupId);
+  } catch (error) {
+    console.error("Failed to send welcome message:", error);
+  }
 }
 
 // 發送設定選單
@@ -216,8 +230,12 @@ async function sendSettingMenu(groupId) {
       },
     },
   };
-  await lineClient.pushMessage(groupId, flexMessage);
-  console.log("Setting menu sent to group:", groupId);
+  try {
+    await lineClient.pushMessage(groupId, flexMessage);
+    console.log("Setting menu sent to group:", groupId);
+  } catch (error) {
+    console.error("Failed to send setting menu:", error);
+  }
 }
 
 // 發送產業類別選單
@@ -290,8 +308,12 @@ async function sendIndustrySelectionMenu(groupId) {
       },
     },
   };
-  await lineClient.pushMessage(groupId, flexMessage);
-  console.log("Industry selection menu sent to group:", groupId);
+  try {
+    await lineClient.pushMessage(groupId, flexMessage);
+    console.log("Industry selection menu sent to group:", groupId);
+  } catch (error) {
+    console.error("Failed to send industry selection menu:", error);
+  }
 }
 
 // 發送翻譯語言選單
@@ -322,8 +344,12 @@ async function sendLanguageSelectionMenu(groupId) {
       },
     },
   };
-  await lineClient.pushMessage(groupId, flexMessage);
-  console.log("Language selection menu sent to group:", groupId);
+  try {
+    await lineClient.pushMessage(groupId, flexMessage);
+    console.log("Language selection menu sent to group:", groupId);
+  } catch (error) {
+    console.error("Failed to send language selection menu:", error);
+  }
 }
 
 // DeepSeek 翻譯函數（加入快取和計時器）
