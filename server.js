@@ -42,6 +42,12 @@ app.post("/webhook", async (req, res) => {
           const groupId = event.source.groupId;
           const userMessage = event.message.text;
 
+          // 檢查是否為設定指令
+          if (userMessage === "更改設定" || userMessage === "查看設定") {
+            await sendSettingMenu(groupId);
+            return;
+          }
+
           if (!groupSettings[groupId] || !groupSettings[groupId].targetLang || !groupSettings[groupId].industry) {
             await lineClient.replyMessage(event.replyToken, {
               type: "text",
@@ -79,12 +85,7 @@ app.post("/webhook", async (req, res) => {
           const action = params.get("action");
           const groupId = params.get("groupId");
 
-          if (action === "selectIndustry") {
-            await sendIndustrySelectionMenu(groupId);
-          } else if (action === "selectLanguage") {
-            const languages = await detectGroupMemberLanguages(groupId);
-            await sendLanguageSelectionMenu(groupId, languages);
-          } else if (action === "setIndustry") {
+          if (action === "setIndustry") {
             const industry = params.get("industry");
             groupSettings[groupId] = groupSettings[groupId] || { translate: "on" };
             groupSettings[groupId].industry = industry;
@@ -104,6 +105,18 @@ app.post("/webhook", async (req, res) => {
               text: `已設定翻譯語言為：${language}`,
             });
             console.log("Group settings updated:", groupSettings[groupId]);
+          } else if (action === "completeSetting") {
+            await lineClient.replyMessage(event.replyToken, {
+              type: "text",
+              text: "設定已完成！",
+            });
+          } else if (action === "cancelTranslation") {
+            groupSettings[groupId] = groupSettings[groupId] || {};
+            groupSettings[groupId].translate = "off";
+            await lineClient.replyMessage(event.replyToken, {
+              type: "text",
+              text: "已取消翻譯功能。",
+            });
           }
         }
       })
@@ -119,7 +132,7 @@ app.post("/webhook", async (req, res) => {
 async function sendWelcomeMessage(groupId) {
   const flexMessage = {
     type: "flex",
-    altText: "請選擇產業類別和翻譯語言",
+    altText: "歡迎使用翻譯機器人！",
     contents: {
       type: "bubble",
       body: {
@@ -127,7 +140,36 @@ async function sendWelcomeMessage(groupId) {
         layout: "vertical",
         contents: [
           { type: "text", text: "歡迎使用翻譯機器人！", weight: "bold", size: "xl" },
-          { type: "text", text: "請選擇產業類別和翻譯語言：", margin: "md" },
+          { type: "text", text: "請點擊下方按鈕開始設定：", margin: "md" },
+          {
+            type: "button",
+            action: {
+              type: "postback",
+              label: "開始設定",
+              data: `action=startSetting&groupId=${groupId}`,
+            },
+            margin: "md",
+          },
+        ],
+      },
+    },
+  };
+  await lineClient.pushMessage(groupId, flexMessage);
+  console.log("Welcome message sent to group:", groupId);
+}
+
+// 發送設定選單
+async function sendSettingMenu(groupId) {
+  const flexMessage = {
+    type: "flex",
+    altText: "請選擇產業類別和翻譯語言",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "請選擇設定項目：", weight: "bold", size: "xl" },
           {
             type: "button",
             action: {
@@ -146,12 +188,30 @@ async function sendWelcomeMessage(groupId) {
             },
             margin: "md",
           },
+          {
+            type: "button",
+            action: {
+              type: "postback",
+              label: "取消翻譯",
+              data: `action=cancelTranslation&groupId=${groupId}`,
+            },
+            margin: "md",
+          },
+          {
+            type: "button",
+            action: {
+              type: "postback",
+              label: "設定完成",
+              data: `action=completeSetting&groupId=${groupId}`,
+            },
+            margin: "md",
+          },
         ],
       },
     },
   };
   await lineClient.pushMessage(groupId, flexMessage);
-  console.log("Welcome message sent to group:", groupId);
+  console.log("Setting menu sent to group:", groupId);
 }
 
 // 發送產業類別選單
@@ -228,14 +288,9 @@ async function sendIndustrySelectionMenu(groupId) {
   console.log("Industry selection menu sent to group:", groupId);
 }
 
-// 偵測群組成員語言（簡化版）
-async function detectGroupMemberLanguages(groupId) {
-  // 這裡使用固定語言列表進行測試，實際應用中可根據需求實現
-  return ["繁體中文", "英文", "越南語", "泰國語"];
-}
-
 // 發送翻譯語言選單
-async function sendLanguageSelectionMenu(groupId, languages) {
+async function sendLanguageSelectionMenu(groupId) {
+  const languages = ["繁體中文", "英文", "越南語", "泰國語", "日語", "韓語", "不翻譯"];
   const buttons = languages.map((language) => ({
     type: "button",
     action: {
@@ -257,15 +312,6 @@ async function sendLanguageSelectionMenu(groupId, languages) {
         contents: [
           { type: "text", text: "請選擇翻譯語言：", weight: "bold", size: "xl" },
           ...buttons,
-          {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "不翻譯",
-              data: `action=setLanguage&groupId=${groupId}&language=off`,
-            },
-            margin: "md",
-          },
         ],
       },
     },
