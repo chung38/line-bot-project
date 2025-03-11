@@ -104,14 +104,12 @@ app.post("/webhook", async (req, res) => {
             const industry = params.get("industry");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].industry = industry;
-            // 不回覆新畫面，僅記錄選擇
-            console.log("Industry selected:", tempSettings[groupId]);
+            await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
           } else if (action === "selectLanguage") {
             const language = params.get("language");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].targetLang = language;
-            // 不回覆新畫面，僅記錄選擇
-            console.log("Language selected:", tempSettings[groupId]);
+            await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
           } else if (action === "confirmSetting") {
             if (!tempSettings[groupId] || !tempSettings[groupId].industry || !tempSettings[groupId].targetLang) {
               await lineClient.replyMessage(event.replyToken, {
@@ -178,6 +176,9 @@ async function sendWelcomeMessage(groupId) {
 
 // 發送整合的設定畫面
 async function sendSettingScreen(groupId, replyToken) {
+  const selectedIndustry = tempSettings[groupId]?.industry;
+  const selectedLanguage = tempSettings[groupId]?.targetLang;
+
   const flexMessage = {
     type: "flex",
     altText: "請選擇產業類別和翻譯語言",
@@ -204,12 +205,12 @@ async function sendSettingScreen(groupId, replyToken) {
             type: "box",
             layout: "vertical",
             contents: [
-              { type: "button", action: { type: "postback", label: "玻璃業", data: `action=selectIndustry&groupId=${groupId}&industry=玻璃業` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "紡織業", data: `action=selectIndustry&groupId=${groupId}&industry=紡織業` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "CNC", data: `action=selectIndustry&groupId=${groupId}&industry=CNC` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "畜牧業", data: `action=selectIndustry&groupId=${groupId}&industry=畜牧業` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "農業", data: `action=selectIndustry&groupId=${groupId}&industry=農業` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "一般傳產", data: `action=selectIndustry&groupId=${groupId}&industry=一般傳產` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "玻璃業", data: `action=selectIndustry&groupId=${groupId}&industry=玻璃業` }, style: selectedIndustry === "玻璃業" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "紡織業", data: `action=selectIndustry&groupId=${groupId}&industry=紡織業` }, style: selectedIndustry === "紡織業" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "CNC", data: `action=selectIndustry&groupId=${groupId}&industry=CNC` }, style: selectedIndustry === "CNC" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "畜牧業", data: `action=selectIndustry&groupId=${groupId}&industry=畜牧業` }, style: selectedIndustry === "畜牧業" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "農業", data: `action=selectIndustry&groupId=${groupId}&industry=農業` }, style: selectedIndustry === "農業" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "一般傳產", data: `action=selectIndustry&groupId=${groupId}&industry=一般傳產` }, style: selectedIndustry === "一般傳產" ? "primary" : "secondary", margin: "sm" },
             ],
           },
           {
@@ -223,12 +224,12 @@ async function sendSettingScreen(groupId, replyToken) {
             type: "box",
             layout: "vertical",
             contents: [
-              { type: "button", action: { type: "postback", label: "繁體中文", data: `action=selectLanguage&groupId=${groupId}&language=繁體中文` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "英文", data: `action=selectLanguage&groupId=${groupId}&language=英文` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "越南語", data: `action=selectLanguage&groupId=${groupId}&language=越南語` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "泰國語", data: `action=selectLanguage&groupId=${groupId}&language=泰國語` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "印尼語", data: `action=selectLanguage&groupId=${groupId}&language=印尼語` }, style: "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "不翻譯", data: `action=selectLanguage&groupId=${groupId}&language=不翻譯` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "繁體中文", data: `action=selectLanguage&groupId=${groupId}&language=繁體中文` }, style: selectedLanguage === "繁體中文" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "英文", data: `action=selectLanguage&groupId=${groupId}&language=英文` }, style: selectedLanguage === "英文" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "越南語", data: `action=selectLanguage&groupId=${groupId}&language=越南語` }, style: selectedLanguage === "越南語" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "泰國語", data: `action=selectLanguage&groupId=${groupId}&language=泰國語` }, style: selectedLanguage === "泰國語" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "印尼語", data: `action=selectLanguage&groupId=${groupId}&language=印尼語` }, style: selectedLanguage === "印尼語" ? "primary" : "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "不翻譯", data: `action=selectLanguage&groupId=${groupId}&language=不翻譯` }, style: selectedLanguage === "不翻譯" ? "primary" : "secondary", margin: "sm" },
             ],
           },
         ],
