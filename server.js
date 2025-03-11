@@ -56,7 +56,7 @@ app.post("/webhook", async (req, res) => {
           const replyToken = event.replyToken;
 
           if (userMessage === "更改設定" || userMessage === "查看設定") {
-            await sendSettingScreen(groupId, event.replyToken);
+            await sendSettingScreen(groupId, replyToken);
             return;
           }
 
@@ -104,12 +104,14 @@ app.post("/webhook", async (req, res) => {
             const industry = params.get("industry");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].industry = industry;
-            await sendSettingScreen(groupId, event.replyToken);
+            // 不回覆新畫面，僅記錄選擇
+            console.log("Industry selected:", tempSettings[groupId]);
           } else if (action === "selectLanguage") {
             const language = params.get("language");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].targetLang = language;
-            await sendSettingScreen(groupId, event.replyToken);
+            // 不回覆新畫面，僅記錄選擇
+            console.log("Language selected:", tempSettings[groupId]);
           } else if (action === "confirmSetting") {
             if (!tempSettings[groupId] || !tempSettings[groupId].industry || !tempSettings[groupId].targetLang) {
               await lineClient.replyMessage(event.replyToken, {
@@ -176,9 +178,6 @@ async function sendWelcomeMessage(groupId) {
 
 // 發送整合的設定畫面
 async function sendSettingScreen(groupId, replyToken) {
-  const currentIndustry = tempSettings[groupId]?.industry || "未選擇";
-  const currentLanguage = tempSettings[groupId]?.targetLang || "未選擇";
-
   const flexMessage = {
     type: "flex",
     altText: "請選擇產業類別和翻譯語言",
@@ -194,17 +193,6 @@ async function sendSettingScreen(groupId, replyToken) {
         type: "box",
         layout: "vertical",
         contents: [
-          {
-            type: "text",
-            text: `目前選擇 - 產業：${currentIndustry}，語言：${currentLanguage}`,
-            size: "sm",
-            color: "#888888",
-            margin: "md",
-          },
-          {
-            type: "separator",
-            margin: "md",
-          },
           {
             type: "text",
             text: "產業類別：",
