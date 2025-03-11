@@ -176,8 +176,8 @@ async function sendWelcomeMessage(groupId) {
 
 // 發送整合的設定畫面
 async function sendSettingScreen(groupId, replyToken) {
-  const selectedIndustry = tempSettings[groupId]?.industry;
-  const selectedLanguage = tempSettings[groupId]?.targetLang;
+  const selectedIndustry = tempSettings[groupId]?.industry || null;
+  const selectedLanguage = tempSettings[groupId]?.targetLang || null;
 
   const flexMessage = {
     type: "flex",
@@ -194,6 +194,17 @@ async function sendSettingScreen(groupId, replyToken) {
         type: "box",
         layout: "vertical",
         contents: [
+          {
+            type: "text",
+            text: `目前選擇 - 產業：${selectedIndustry || "未選擇"}，語言：${selectedLanguage || "未選擇"}`,
+            size: "sm",
+            color: "#888888",
+            margin: "md",
+          },
+          {
+            type: "separator",
+            margin: "md",
+          },
           {
             type: "text",
             text: "產業類別：",
@@ -250,7 +261,7 @@ async function sendSettingScreen(groupId, replyToken) {
           },
           {
             type: "text",
-            text: "請選擇產業類別和語言後點擊確認。",
+            text: "選擇後按鈕會變色，請確認後點擊確認。",
             size: "xs",
             color: "#888888",
             wrap: true,
