@@ -18,6 +18,9 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 // 群組設定（產業類別和翻譯語言）
 const groupSettings = {};
 
+// 翻譯結果快取
+const translationCache = new Map();
+
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
@@ -271,9 +274,17 @@ async function sendLanguageSelectionMenu(groupId, languages) {
   console.log("Language selection menu sent to group:", groupId);
 }
 
-// DeepSeek 翻譯函數（加入產業類別上下文）
+// DeepSeek 翻譯函數（加入快取和計時器）
 async function translateWithDeepSeek(text, targetLang, industry) {
+  const cacheKey = `${text}-${targetLang}-${industry}`; // 快取鍵
+  if (translationCache.has(cacheKey)) {
+    console.log("Cache hit:", cacheKey);
+    return translationCache.get(cacheKey); // 直接返回快取結果
+  }
+
   const apiUrl = "https://api.deepseek.com/v1/chat/completions";
+  const startTime = Date.now(); // 開始計時
+
   try {
     const response = await axios.post(
       apiUrl,
@@ -294,8 +305,12 @@ async function translateWithDeepSeek(text, targetLang, industry) {
         },
       }
     );
+
     const result = response.data.choices[0].message.content.trim();
-    console.log(`Translated "${text}" to ${targetLang}: ${result}`);
+    const endTime = Date.now(); // 結束計時
+    console.log(`Translated "${text}" to ${targetLang} in ${endTime - startTime}ms: ${result}`);
+
+    translationCache.set(cacheKey, result); // 將結果存入快取
     return result;
   } catch (error) {
     console.error("Translation API error:", error.response?.data || error.message);
