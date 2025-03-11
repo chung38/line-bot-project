@@ -85,7 +85,13 @@ app.post("/webhook", async (req, res) => {
           const action = params.get("action");
           const groupId = params.get("groupId");
 
-          if (action === "setIndustry") {
+          if (action === "startSetting") {
+            await sendSettingMenu(groupId);
+          } else if (action === "selectIndustry") {
+            await sendIndustrySelectionMenu(groupId);
+          } else if (action === "selectLanguage") {
+            await sendLanguageSelectionMenu(groupId);
+          } else if (action === "setIndustry") {
             const industry = params.get("industry");
             groupSettings[groupId] = groupSettings[groupId] || { translate: "on" };
             groupSettings[groupId].industry = industry;
@@ -98,7 +104,7 @@ app.post("/webhook", async (req, res) => {
             const language = params.get("language");
             groupSettings[groupId] = groupSettings[groupId] || { translate: "on" };
             groupSettings[groupId].targetLang = language;
-            if (language === "off") groupSettings[groupId].translate = "off";
+            if (language === "off" || language === "不翻譯") groupSettings[groupId].translate = "off";
             else groupSettings[groupId].translate = "on";
             await lineClient.replyMessage(event.replyToken, {
               type: "text",
@@ -295,7 +301,7 @@ async function sendLanguageSelectionMenu(groupId) {
     type: "button",
     action: {
       type: "postback",
-      label: `翻譯成 ${language}`,
+      label: language === "不翻譯" ? "不翻譯" : `翻譯成 ${language}`,
       data: `action=setLanguage&groupId=${groupId}&language=${language}`,
     },
     margin: "md",
