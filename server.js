@@ -52,9 +52,8 @@ app.post("/webhook", async (req, res) => {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
 
-          // 檢查是否為設定指令
           if (userMessage === "更改設定" || userMessage === "查看設定") {
-            await sendSettingMenu(groupId);
+            await sendSettingScreen(groupId);
             return;
           }
 
@@ -96,43 +95,20 @@ app.post("/webhook", async (req, res) => {
           const groupId = params.get("groupId");
 
           if (action === "startSetting") {
-            await sendSettingMenu(groupId);
-          } else if (action === "selectIndustry") {
-            await sendIndustrySelectionMenu(groupId);
-          } else if (action === "selectLanguage") {
-            await sendLanguageSelectionMenu(groupId);
-          } else if (action === "setIndustry") {
+            await sendSettingScreen(groupId);
+          } else if (action === "confirmSetting") {
             const industry = params.get("industry");
-            groupSettings[groupId] = groupSettings[groupId] || { translate: "on" };
-            groupSettings[groupId].industry = industry;
-            await lineClient.replyMessage(event.replyToken, {
-              type: "text",
-              text: `已設定產業類別為：${industry}`,
-            });
-            console.log("Group settings updated:", groupSettings[groupId]);
-          } else if (action === "setLanguage") {
             const language = params.get("language");
             groupSettings[groupId] = groupSettings[groupId] || { translate: "on" };
+            groupSettings[groupId].industry = industry;
             groupSettings[groupId].targetLang = language;
-            if (language === "off" || language === "不翻譯") groupSettings[groupId].translate = "off";
+            if (language === "不翻譯") groupSettings[groupId].translate = "off";
             else groupSettings[groupId].translate = "on";
             await lineClient.replyMessage(event.replyToken, {
               type: "text",
-              text: `已設定翻譯語言為：${language}`,
+              text: `設定完成！\n產業類別：${industry}\n翻譯語言：${language}`,
             });
             console.log("Group settings updated:", groupSettings[groupId]);
-          } else if (action === "completeSetting") {
-            await lineClient.replyMessage(event.replyToken, {
-              type: "text",
-              text: "設定已完成！",
-            });
-          } else if (action === "cancelTranslation") {
-            groupSettings[groupId] = groupSettings[groupId] || {};
-            groupSettings[groupId].translate = "off";
-            await lineClient.replyMessage(event.replyToken, {
-              type: "text",
-              text: "已取消翻譯功能。",
-            });
           }
         }
       })
@@ -178,53 +154,73 @@ async function sendWelcomeMessage(groupId) {
   }
 }
 
-// 發送設定選單
-async function sendSettingMenu(groupId) {
+// 發送整合的設定畫面
+async function sendSettingScreen(groupId) {
   const flexMessage = {
     type: "flex",
     altText: "請選擇產業類別和翻譯語言",
     contents: {
       type: "bubble",
+      header: {
+        type: "box",
+        layout: "vertical",
+        contents: [{ type: "text", text: "設定翻譯機器人", weight: "bold", size: "xl", color: "#ffffff" }],
+        backgroundColor: "#1DB446",
+      },
       body: {
         type: "box",
         layout: "vertical",
         contents: [
-          { type: "text", text: "請選擇設定項目：", weight: "bold", size: "xl" },
           {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "選擇產業類別",
-              data: `action=selectIndustry&groupId=${groupId}`,
-            },
+            type: "text",
+            text: "產業類別：",
+            weight: "bold",
+            size: "md",
             margin: "md",
           },
           {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "選擇翻譯語言",
-              data: `action=selectLanguage&groupId=${groupId}`,
-            },
+            type: "box",
+            layout: "vertical",
+            contents: [
+              { type: "button", action: { type: "postback", label: "玻璃業", data: `action=confirmSetting&groupId=${groupId}&industry=玻璃業&language=${groupSettings[groupId]?.targetLang || "不翻譯"}` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "紡織業", data: `action=confirmSetting&groupId=${groupId}&industry=紡織業&language=${groupSettings[groupId]?.targetLang || "不翻譯"}` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "CNC", data: `action=confirmSetting&groupId=${groupId}&industry=CNC&language=${groupSettings[groupId]?.targetLang || "不翻譯"}` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "畜牧業", data: `action=confirmSetting&groupId=${groupId}&industry=畜牧業&language=${groupSettings[groupId]?.targetLang || "不翻譯"}` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "農業", data: `action=confirmSetting&groupId=${groupId}&industry=農業&language=${groupSettings[groupId]?.targetLang || "不翻譯"}` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "一般傳產", data: `action=confirmSetting&groupId=${groupId}&industry=一般傳產&language=${groupSettings[groupId]?.targetLang || "不翻譯"}` }, style: "secondary", margin: "sm" },
+            ],
+          },
+          {
+            type: "text",
+            text: "翻譯語言：",
+            weight: "bold",
+            size: "md",
             margin: "md",
           },
           {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "取消翻譯",
-              data: `action=cancelTranslation&groupId=${groupId}`,
-            },
-            margin: "md",
+            type: "box",
+            layout: "vertical",
+            contents: [
+              { type: "button", action: { type: "postback", label: "繁體中文", data: `action=confirmSetting&groupId=${groupId}&industry=${groupSettings[groupId]?.industry || "一般傳產"}&language=繁體中文` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "英文", data: `action=confirmSetting&groupId=${groupId}&industry=${groupSettings[groupId]?.industry || "一般傳產"}&language=英文` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "越南語", data: `action=confirmSetting&groupId=${groupId}&industry=${groupSettings[groupId]?.industry || "一般傳產"}&language=越南語` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "泰國語", data: `action=confirmSetting&groupId=${groupId}&industry=${groupSettings[groupId]?.industry || "一般傳產"}&language=泰國語` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "印尼語", data: `action=confirmSetting&groupId=${groupId}&industry=${groupSettings[groupId]?.industry || "一般傳產"}&language=印尼語` }, style: "secondary", margin: "sm" },
+              { type: "button", action: { type: "postback", label: "不翻譯", data: `action=confirmSetting&groupId=${groupId}&industry=${groupSettings[groupId]?.industry || "一般傳產"}&language=不翻譯` }, style: "secondary", margin: "sm" },
+            ],
           },
+        ],
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        contents: [
           {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "設定完成",
-              data: `action=completeSetting&groupId=${groupId}`,
-            },
-            margin: "md",
+            type: "text",
+            text: "請依次選擇產業類別和翻譯語言，設定將在最後一次選擇後生效。",
+            size: "xs",
+            color: "#888888",
+            wrap: true,
           },
         ],
       },
@@ -232,123 +228,9 @@ async function sendSettingMenu(groupId) {
   };
   try {
     await lineClient.pushMessage(groupId, flexMessage);
-    console.log("Setting menu sent to group:", groupId);
+    console.log("Setting screen sent to group:", groupId);
   } catch (error) {
-    console.error("Failed to send setting menu:", error);
-  }
-}
-
-// 發送產業類別選單
-async function sendIndustrySelectionMenu(groupId) {
-  const flexMessage = {
-    type: "flex",
-    altText: "請選擇產業類別",
-    contents: {
-      type: "bubble",
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          { type: "text", text: "請選擇產業類別：", weight: "bold", size: "xl" },
-          {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "玻璃業",
-              data: `action=setIndustry&groupId=${groupId}&industry=玻璃業`,
-            },
-            margin: "md",
-          },
-          {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "紡織業",
-              data: `action=setIndustry&groupId=${groupId}&industry=紡織業`,
-            },
-            margin: "md",
-          },
-          {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "CNC",
-              data: `action=setIndustry&groupId=${groupId}&industry=CNC`,
-            },
-            margin: "md",
-          },
-          {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "畜牧業",
-              data: `action=setIndustry&groupId=${groupId}&industry=畜牧業`,
-            },
-            margin: "md",
-          },
-          {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "農業",
-              data: `action=setIndustry&groupId=${groupId}&industry=農業`,
-            },
-            margin: "md",
-          },
-          {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "一般傳產",
-              data: `action=setIndustry&groupId=${groupId}&industry=一般傳產`,
-            },
-            margin: "md",
-          },
-        ],
-      },
-    },
-  };
-  try {
-    await lineClient.pushMessage(groupId, flexMessage);
-    console.log("Industry selection menu sent to group:", groupId);
-  } catch (error) {
-    console.error("Failed to send industry selection menu:", error);
-  }
-}
-
-// 發送翻譯語言選單
-async function sendLanguageSelectionMenu(groupId) {
-  const languages = ["繁體中文", "英文", "越南語", "泰國語", "日語", "韓語", "不翻譯"];
-  const buttons = languages.map((language) => ({
-    type: "button",
-    action: {
-      type: "postback",
-      label: language === "不翻譯" ? "不翻譯" : `翻譯成 ${language}`,
-      data: `action=setLanguage&groupId=${groupId}&language=${language}`,
-    },
-    margin: "md",
-  }));
-
-  const flexMessage = {
-    type: "flex",
-    altText: "請選擇翻譯語言",
-    contents: {
-      type: "bubble",
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          { type: "text", text: "請選擇翻譯語言：", weight: "bold", size: "xl" },
-          ...buttons,
-        ],
-      },
-    },
-  };
-  try {
-    await lineClient.pushMessage(groupId, flexMessage);
-    console.log("Language selection menu sent to group:", groupId);
-  } catch (error) {
-    console.error("Failed to send language selection menu:", error);
+    console.error("Failed to send setting screen:", error);
   }
 }
 
