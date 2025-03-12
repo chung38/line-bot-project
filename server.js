@@ -55,12 +55,14 @@ app.post("/webhook", async (req, res) => {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
 
+          // 觸發設定選單
           if (userMessage === "更改設定" || userMessage === "查看設定") {
             console.log("Triggering setting screen for group:", groupId);
             await sendSettingScreen(groupId, replyToken);
             return;
           }
 
+          // 檢查是否已完成設定
           if (!groupSettings[groupId] || !groupSettings[groupId].targetLang || !groupSettings[groupId].industry) {
             await lineClient.replyMessage(replyToken, {
               type: "text",
@@ -69,6 +71,7 @@ app.post("/webhook", async (req, res) => {
             return;
           }
 
+          // 如果翻譯功能關閉，直接回覆原始訊息
           if (groupSettings[groupId].translate === "off") {
             await lineClient.replyMessage(replyToken, {
               type: "text",
@@ -77,6 +80,7 @@ app.post("/webhook", async (req, res) => {
             return;
           }
 
+          // 進行翻譯
           const translatedText = await translateWithDeepSeek(
             userMessage,
             groupSettings[groupId].targetLang,
