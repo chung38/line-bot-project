@@ -55,7 +55,10 @@ app.post("/webhook", async (req, res) => {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
 
+          console.log(`Received message from group ${groupId}: ${userMessage}`);
+
           if (userMessage === "更改設定" || userMessage === "查看設定") {
+            console.log(`Triggering setting screen for group ${groupId}`);
             await sendSettingScreen(groupId, replyToken);
             return;
           }
@@ -65,6 +68,8 @@ app.post("/webhook", async (req, res) => {
               type: "text",
               text: "請先完成產業類別和翻譯語言的設定！",
             });
+            // 自動顯示設定選單
+            await sendSettingScreen(groupId, replyToken);
             return;
           }
 
@@ -97,18 +102,23 @@ app.post("/webhook", async (req, res) => {
           const action = params.get("action");
           const groupId = params.get("groupId");
 
+          console.log(`Received postback: action=${action}, groupId=${groupId}`);
+
           if (action === "startSetting") {
             tempSettings[groupId] = {}; // 初始化臨時設定
+            console.log(`Starting setting for group ${groupId}`);
             await sendSettingScreen(groupId, event.replyToken);
           } else if (action === "selectIndustry") {
             const industry = params.get("industry");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].industry = industry;
+            console.log(`Industry selected for group ${groupId}: ${industry}`);
             await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
           } else if (action === "selectLanguage") {
             const language = params.get("language");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].targetLang = language;
+            console.log(`Language selected for group ${groupId}: ${language}`);
             await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
           } else if (action === "confirmSetting") {
             if (!tempSettings[groupId] || !tempSettings[groupId].industry || !tempSettings[groupId].targetLang) {
