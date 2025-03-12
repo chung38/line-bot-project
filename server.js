@@ -187,7 +187,7 @@ async function sendWelcomeMessage(groupId) {
   }
 }
 
-// 發送整合的設定畫面
+// 發送整合的設定畫面（使用核取方塊）
 async function sendSettingScreen(groupId, replyToken) {
   const selectedIndustry = tempSettings[groupId]?.industry;
   const selectedLanguage = tempSettings[groupId]?.targetLang;
