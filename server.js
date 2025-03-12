@@ -7,13 +7,23 @@ const app = express();
 app.use(express.json());
 
 // LINE Messaging API 設定
-const lineClient = new Client({
+const lineConfig = {
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
   channelSecret: process.env.LINE_SECRET,
-});
+};
+
+if (!lineConfig.channelAccessToken || !lineConfig.channelSecret) {
+  console.error("Error: LINE_ACCESS_TOKEN or LINE_SECRET is not set in .env");
+  process.exit(1);
+}
+
+const lineClient = new Client(lineConfig);
 
 // DeepSeek API Key
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+if (!DEEPSEEK_API_KEY) {
+  console.error("Error: DEEPSEEK_API_KEY is not set in .env");
+}
 
 // 群組設定（產業類別和翻譯語言）
 const groupSettings = {};
@@ -55,7 +65,10 @@ app.post("/webhook", async (req, res) => {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
 
+          console.log(`Received message from group ${groupId}: ${userMessage}`);
+
           if (userMessage === "更改設定" || userMessage === "查看設定") {
+            console.log(`Triggering setting screen for group ${groupId}`);
             await sendSettingScreen(groupId, replyToken);
             return;
           }
@@ -97,18 +110,23 @@ app.post("/webhook", async (req, res) => {
           const action = params.get("action");
           const groupId = params.get("groupId");
 
+          console.log(`Received postback: action=${action}, groupId=${groupId}`);
+
           if (action === "startSetting") {
             tempSettings[groupId] = {}; // 初始化臨時設定
+            console.log(`Starting setting for group ${groupId}`);
             await sendSettingScreen(groupId, event.replyToken);
           } else if (action === "selectIndustry") {
             const industry = params.get("industry");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].industry = industry;
+            console.log(`Industry selected for group ${groupId}: ${industry}`);
             await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
           } else if (action === "selectLanguage") {
             const language = params.get("language");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].targetLang = language;
+            console.log(`Language selected for group ${groupId}: ${language}`);
             await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
           } else if (action === "confirmSetting") {
             if (!tempSettings[groupId] || !tempSettings[groupId].industry || !tempSettings[groupId].targetLang) {
