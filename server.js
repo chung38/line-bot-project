@@ -7,23 +7,13 @@ const app = express();
 app.use(express.json());
 
 // LINE Messaging API 設定
-const lineConfig = {
+const lineClient = new Client({
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
   channelSecret: process.env.LINE_SECRET,
-};
-
-if (!lineConfig.channelAccessToken || !lineConfig.channelSecret) {
-  console.error("Error: LINE_ACCESS_TOKEN or LINE_SECRET is not set in .env");
-  process.exit(1);
-}
-
-const lineClient = new Client(lineConfig);
+});
 
 // DeepSeek API Key
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-if (!DEEPSEEK_API_KEY) {
-  console.error("Error: DEEPSEEK_API_KEY is not set in .env");
-}
 
 // 群組設定（產業類別和翻譯語言）
 const groupSettings = {};
@@ -36,12 +26,6 @@ const translationCache = new Map();
 
 // 已處理的 replyToken 集合
 const processedReplyTokens = new Set();
-
-// 測試路由，確認伺服器是否正常運行
-app.get("/test", (req, res) => {
-  console.log("Received /test request");
-  res.send("Server is running!");
-});
 
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
@@ -71,27 +55,21 @@ app.post("/webhook", async (req, res) => {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
 
-          console.log(`Received message from group ${groupId}: ${userMessage}`);
-
           if (userMessage === "更改設定" || userMessage === "查看設定") {
-            console.log(`Triggering setting screen for group ${groupId}`);
+            console.log("Triggering setting screen for group:", groupId);
             await sendSettingScreen(groupId, replyToken);
             return;
           }
 
           if (!groupSettings[groupId] || !groupSettings[groupId].targetLang || !groupSettings[groupId].industry) {
-            console.log(`Group ${groupId} has not completed settings. Showing setting screen.`);
             await lineClient.replyMessage(replyToken, {
               type: "text",
               text: "請先完成產業類別和翻譯語言的設定！",
             });
-            // 自動顯示設定選單
-            await sendSettingScreen(groupId, replyToken);
             return;
           }
 
           if (groupSettings[groupId].translate === "off") {
-            console.log(`Translation is off for group ${groupId}. Echoing message: ${userMessage}`);
             await lineClient.replyMessage(replyToken, {
               type: "text",
               text: userMessage,
@@ -99,7 +77,6 @@ app.post("/webhook", async (req, res) => {
             return;
           }
 
-          console.log(`Translating message for group ${groupId}: ${userMessage}`);
           const translatedText = await translateWithDeepSeek(
             userMessage,
             groupSettings[groupId].targetLang,
@@ -116,32 +93,27 @@ app.post("/webhook", async (req, res) => {
 
         // 處理 Postback 事件
         if (event.type === "postback") {
+          console.log("Received postback event:", event.postback.data);
           const data = event.postback.data;
           const params = new URLSearchParams(data);
           const action = params.get("action");
           const groupId = params.get("groupId");
 
-          console.log(`Received postback: action=${action}, groupId=${groupId}`);
-
           if (action === "startSetting") {
             tempSettings[groupId] = {}; // 初始化臨時設定
-            console.log(`Starting setting for group ${groupId}`);
             await sendSettingScreen(groupId, event.replyToken);
           } else if (action === "selectIndustry") {
             const industry = params.get("industry");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].industry = industry;
-            console.log(`Industry selected for group ${groupId}: ${industry}`);
             await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
           } else if (action === "selectLanguage") {
             const language = params.get("language");
             tempSettings[groupId] = tempSettings[groupId] || {};
             tempSettings[groupId].targetLang = language;
-            console.log(`Language selected for group ${groupId}: ${language}`);
             await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
           } else if (action === "confirmSetting") {
             if (!tempSettings[groupId] || !tempSettings[groupId].industry || !tempSettings[groupId].targetLang) {
-              console.log(`Incomplete settings for group ${groupId}. Prompting to complete.`);
               await lineClient.replyMessage(event.replyToken, {
                 type: "text",
                 text: "請先選擇產業類別和翻譯語言！",
@@ -172,6 +144,13 @@ app.post("/webhook", async (req, res) => {
 
 // 發送歡迎訊息和選單
 async function sendWelcomeMessage(groupId) {
+  if (!groupSettings[groupId]) {
+    groupSettings[groupId] = {
+      industry: null,
+      targetLang: null,
+      translate: "off",
+    };
+  }
   const flexMessage = {
     type: "flex",
     altText: "歡迎使用翻譯機器人！",
@@ -291,7 +270,6 @@ async function sendSettingScreen(groupId, replyToken) {
     },
   };
   try {
-    console.log(`Sending setting screen to group ${groupId}`);
     await lineClient.replyMessage(replyToken, flexMessage);
     console.log("Setting screen sent to group:", groupId);
   } catch (error) {
