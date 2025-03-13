@@ -92,47 +92,43 @@ app.post("/webhook", async (req, res) => {
           }
           const languages = groupLanguages.get(groupId);
 
-          // 如果是目標語言之一，翻譯成繁體中文並記錄語言
-          if (targetLanguages.includes(detectedLang)) {
+          // 記錄該語言（Set 自動去重）
+          if (targetLanguages.includes(detectedLang) || detectedLang === "zh-TW" || detectedLang === "zh") {
             languages.add(detectedLang);
-            const translatedText = await translateWithDeepSeek(
-              userMessage,
-              "繁體中文"
-            );
-            await lineClient.replyMessage(replyToken, {
-              type: "text",
-              text: `【繁體中文】${translatedText}`,
-            });
           }
-          // 如果是繁體中文，根據群組語言集合翻譯成其他語言
-          else if (detectedLang === "zh-TW" || detectedLang === "zh") {
-            if (languages.size > 0) {
-              const translations = await Promise.all(
-                Array.from(languages).map(async (lang) => {
+
+          // 準備翻譯回覆
+          let replyText = "";
+
+          // 如果是目標語言，翻譯成繁體中文
+          if (targetLanguages.includes(detectedLang)) {
+            const translatedText = await translateWithDeepSeek(userMessage, "繁體中文");
+            replyText += `【繁體中文】${translatedText}\n`;
+          }
+
+          // 如果是繁體中文，根據群組語言翻譯成其他語言（排除繁體中文）
+          if (detectedLang === "zh-TW" || detectedLang === "zh") {
+            const translations = await Promise.all(
+              Array.from(languages).map(async (lang) => {
+                if (lang !== "zh-TW" && lang !== "zh") { // 避免重複回覆繁體中文
                   const targetLang = languageNames[lang];
-                  const translatedText = await translateWithDeepSeek(
-                    userMessage,
-                    targetLang
-                  );
+                  const translatedText = await translateWithDeepSeek(userMessage, targetLang);
                   return `【${languageNames[lang]}】${translatedText}`;
-                })
-              );
-              await lineClient.replyMessage(replyToken, {
-                type: "text",
-                text: translations.join("\n"),
-              });
-            } else {
-              await lineClient.replyMessage(replyToken, {
-                type: "text",
-                text: userMessage,
-              });
+                }
+                return null;
+              })
+            );
+            const filteredTranslations = translations.filter((t) => t !== null);
+            if (filteredTranslations.length > 0) {
+              replyText += filteredTranslations.join("\n");
             }
           }
-          // 其他語言暫不處理
-          else {
+
+          // 發送回覆
+          if (replyText) {
             await lineClient.replyMessage(replyToken, {
               type: "text",
-              text: "目前僅支援泰國語、英語、越南語、印尼語和繁體中文。",
+              text: replyText.trim(),
             });
           }
         }
