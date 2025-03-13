@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const { Client } = require("@line/bot-sdk");
+const fs = require("fs").promises; // 用於檔案操作
 
 const app = express();
 app.use(express.json());
@@ -26,8 +27,46 @@ if (!DEEPSEEK_API_KEY) {
   process.exit(1);
 }
 
-// 群組語言追蹤
-const groupLanguages = new Map(); // groupId -> Set of languages
+// 群組語言追蹤（改為從檔案載入）
+const groupLanguages = new Map();
+
+// 檔案路徑
+const STORAGE_FILE = "groupLanguages.json";
+
+// 載入群組語言資料
+async function loadGroupLanguages() {
+  try {
+    const data = await fs.readFile(STORAGE_FILE, "utf8");
+    const parsedData = JSON.parse(data);
+    for (const [groupId, languages] of Object.entries(parsedData)) {
+      groupLanguages.set(groupId, new Set(languages));
+    }
+    console.log("Loaded group languages:", parsedData);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      console.log("No existing group languages file found, starting fresh.");
+    } else {
+      console.error("Error loading group languages:", error.message);
+    }
+  }
+}
+
+// 儲存群組語言資料
+async function saveGroupLanguages() {
+  try {
+    const dataToSave = {};
+    for (const [groupId, languages] of groupLanguages.entries()) {
+      dataToSave[groupId] = Array.from(languages);
+    }
+    await fs.writeFile(STORAGE_FILE, JSON.stringify(dataToSave, null, 2));
+    console.log("Saved group languages:", dataToSave);
+  } catch (error) {
+    console.error("Error saving group languages:", error.message);
+  }
+}
+
+// 啟動時載入資料
+loadGroupLanguages();
 
 // 翻譯結果快取
 const translationCache = new Map();
@@ -93,8 +132,13 @@ app.post("/webhook", async (req, res) => {
           const languages = groupLanguages.get(groupId);
 
           // 記錄該語言（Set 自動去重）
+          let languagesUpdated = false;
           if (targetLanguages.includes(detectedLang) || detectedLang === "zh-TW" || detectedLang === "zh") {
+            const previousSize = languages.size;
             languages.add(detectedLang);
+            if (languages.size > previousSize) {
+              languagesUpdated = true;
+            }
           }
 
           // 準備翻譯回覆
@@ -130,6 +174,11 @@ app.post("/webhook", async (req, res) => {
               type: "text",
               text: replyText.trim(),
             });
+          }
+
+          // 如果語言集合有更新，儲存到檔案
+          if (languagesUpdated) {
+            await saveGroupLanguages();
           }
         }
       })
