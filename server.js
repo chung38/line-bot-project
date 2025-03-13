@@ -139,6 +139,16 @@ app.post("/webhook", async (req, res) => {
             tempSettings[groupId].targetLang = language;
             console.log(`Language selected for group ${groupId}: ${language}`);
             // 不更新畫面
+          } else if (action === "viewCurrentSelection") {
+            const selectedIndustry = tempSettings[groupId]?.industry || "未選擇";
+            const selectedLanguage = tempSettings[groupId]?.targetLang || "未選擇";
+            console.log(`Viewing current selection for group ${groupId}`);
+            await lineClient.replyMessage(event.replyToken, {
+              type: "text",
+              text: `目前選擇 - 產業：${selectedIndustry}，語言：${selectedLanguage}`,
+            });
+            // 重新顯示設定選單
+            await sendSettingScreen(groupId, event.replyToken);
           } else if (action === "confirmSetting") {
             if (!tempSettings[groupId] || !tempSettings[groupId].industry || !tempSettings[groupId].targetLang) {
               console.log(`Incomplete settings for group ${groupId}. Prompting to complete.`);
@@ -269,15 +279,26 @@ async function sendSettingScreen(groupId, replyToken) {
             type: "button",
             action: {
               type: "postback",
+              label: "查看目前選擇",
+              data: `action=viewCurrentSelection&groupId=${groupId}`,
+            },
+            style: "secondary",
+            margin: "sm",
+          },
+          {
+            type: "button",
+            action: {
+              type: "postback",
               label: "確認",
               data: `action=confirmSetting&groupId=${groupId}`,
             },
             style: "primary",
             color: "#1DB446",
+            margin: "sm",
           },
           {
             type: "text",
-            text: "請選擇產業類別和語言後點擊確認。（選擇後畫面不會更新）",
+            text: "選擇後畫面不會更新，點擊「查看目前選擇」確認選擇，或點擊「確認」完成設定。",
             size: "xs",
             color: "#888888",
             wrap: true,
