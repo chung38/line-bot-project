@@ -23,13 +23,11 @@ const lineClient = new Client(lineConfig);
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 if (!DEEPSEEK_API_KEY) {
   console.error("Error: DEEPSEEK_API_KEY is not set in .env");
+  process.exit(1);
 }
 
-// 群組設定（產業類別和翻譯語言）
-const groupSettings = {};
-
-// 臨時設定（用於選擇過程）
-const tempSettings = {};
+// 群組語言追蹤
+const groupLanguages = new Map(); // groupId -> Set of languages
 
 // 翻譯結果快取
 const translationCache = new Map();
@@ -37,22 +35,27 @@ const translationCache = new Map();
 // 已處理的 replyToken 集合
 const processedReplyTokens = new Set();
 
-// 測試路由，確認伺服器是否正常運行
-app.get("/test", (req, res) => {
-  console.log("Received /test request");
-  res.send("Server is running!");
-});
+// 目標語言
+const targetLanguages = ["th", "en", "vi", "id"]; // 泰國語、英語、越南語、印尼語
+
+// 語言名稱對應表
+const languageNames = {
+  th: "泰國語",
+  en: "英語",
+  vi: "越南語",
+  id: "印尼語",
+  "zh-TW": "繁體中文",
+  zh: "繁體中文",
+};
 
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
-  console.log("Received events:", JSON.stringify(events, null, 2));
 
   try {
     await Promise.all(
       events.map(async (event) => {
         if (event.replyToken && processedReplyTokens.has(event.replyToken)) {
-          console.log("Skipping duplicate replyToken:", event.replyToken);
           return;
         }
         if (event.replyToken) processedReplyTokens.add(event.replyToken);
@@ -60,8 +63,10 @@ app.post("/webhook", async (req, res) => {
         // 處理加入群組事件
         if (event.type === "join") {
           const groupId = event.source.groupId;
-          console.log("Bot joined group:", groupId);
-          await sendWelcomeMessage(groupId);
+          await lineClient.pushMessage(groupId, {
+            type: "text",
+            text: "歡迎使用翻譯機器人！我會自動偵測並翻譯訊息。",
+          });
           return;
         }
 
@@ -71,94 +76,64 @@ app.post("/webhook", async (req, res) => {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
 
-          console.log(`Received message from group ${groupId}: ${userMessage}`);
-
-          if (userMessage === "更改設定" || userMessage === "查看設定") {
-            console.log(`Triggering setting screen for group ${groupId}`);
-            await sendSettingScreen(groupId, replyToken);
-            return;
-          }
-
-          if (!groupSettings[groupId] || !groupSettings[groupId].targetLang || !groupSettings[groupId].industry) {
-            console.log(`Group ${groupId} has not completed settings. Showing setting screen.`);
+          // 偵測語言
+          const detectedLang = await detectLanguageWithDeepSeek(userMessage);
+          if (!detectedLang) {
             await lineClient.replyMessage(replyToken, {
               type: "text",
-              text: "請先完成產業類別和翻譯語言的設定！",
-            });
-            // 自動顯示設定選單
-            await sendSettingScreen(groupId, replyToken);
-            return;
-          }
-
-          if (groupSettings[groupId].translate === "off") {
-            console.log(`Translation is off for group ${groupId}. Echoing message: ${userMessage}`);
-            await lineClient.replyMessage(replyToken, {
-              type: "text",
-              text: userMessage,
+              text: "無法偵測語言，請稍後再試。",
             });
             return;
           }
 
-          console.log(`Translating message for group ${groupId}: ${userMessage}`);
-          const translatedText = await translateWithDeepSeek(
-            userMessage,
-            groupSettings[groupId].targetLang,
-            groupSettings[groupId].industry
-          );
+          // 初始化或獲取群組語言集合
+          if (!groupLanguages.has(groupId)) {
+            groupLanguages.set(groupId, new Set());
+          }
+          const languages = groupLanguages.get(groupId);
 
-          await lineClient.replyMessage(replyToken, {
-            type: "text",
-            text: `【${groupSettings[groupId].targetLang}】${translatedText}`,
-          });
-          console.log("Reply sent:", translatedText);
-          return;
-        }
-
-        // 處理 Postback 事件
-        if (event.type === "postback") {
-          const data = event.postback.data;
-          const params = new URLSearchParams(data);
-          const action = params.get("action");
-          const groupId = params.get("groupId");
-
-          console.log(`Received postback: action=${action}, groupId=${groupId}`);
-
-          if (action === "startSetting") {
-            tempSettings[groupId] = {}; // 初始化臨時設定
-            console.log(`Starting setting for group ${groupId}`);
-            await sendSettingScreen(groupId, event.replyToken);
-          } else if (action === "selectIndustry") {
-            const industry = params.get("industry");
-            tempSettings[groupId] = tempSettings[groupId] || {};
-            tempSettings[groupId].industry = industry;
-            console.log(`Industry selected for group ${groupId}: ${industry}`);
-            await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
-          } else if (action === "selectLanguage") {
-            const language = params.get("language");
-            tempSettings[groupId] = tempSettings[groupId] || {};
-            tempSettings[groupId].targetLang = language;
-            console.log(`Language selected for group ${groupId}: ${language}`);
-            await sendSettingScreen(groupId, event.replyToken); // 更新畫面顯示選擇
-          } else if (action === "confirmSetting") {
-            if (!tempSettings[groupId] || !tempSettings[groupId].industry || !tempSettings[groupId].targetLang) {
-              console.log(`Incomplete settings for group ${groupId}. Prompting to complete.`);
-              await lineClient.replyMessage(event.replyToken, {
+          // 如果是目標語言之一，翻譯成繁體中文並記錄語言
+          if (targetLanguages.includes(detectedLang)) {
+            languages.add(detectedLang);
+            const translatedText = await translateWithDeepSeek(
+              userMessage,
+              "繁體中文"
+            );
+            await lineClient.replyMessage(replyToken, {
+              type: "text",
+              text: `【繁體中文】${translatedText}`,
+            });
+          }
+          // 如果是繁體中文，根據群組語言集合翻譯成其他語言
+          else if (detectedLang === "zh-TW" || detectedLang === "zh") {
+            if (languages.size > 0) {
+              const translations = await Promise.all(
+                Array.from(languages).map(async (lang) => {
+                  const targetLang = languageNames[lang];
+                  const translatedText = await translateWithDeepSeek(
+                    userMessage,
+                    targetLang
+                  );
+                  return `【${languageNames[lang]}】${translatedText}`;
+                })
+              );
+              await lineClient.replyMessage(replyToken, {
                 type: "text",
-                text: "請先選擇產業類別和翻譯語言！",
+                text: translations.join("\n"),
               });
-              return;
+            } else {
+              await lineClient.replyMessage(replyToken, {
+                type: "text",
+                text: userMessage,
+              });
             }
-            groupSettings[groupId] = {
-              industry: tempSettings[groupId].industry,
-              targetLang: tempSettings[groupId].targetLang,
-              translate: tempSettings[groupId].targetLang === "不翻譯" ? "off" : "on",
-            };
-            delete tempSettings[groupId]; // 清除臨時設定
-            await lineClient.replyMessage(event.replyToken, {
+          }
+          // 其他語言暫不處理
+          else {
+            await lineClient.replyMessage(replyToken, {
               type: "text",
-              text: `設定完成！\n產業類別：${groupSettings[groupId].industry}\n翻譯語言：${groupSettings[groupId].targetLang}`,
+              text: "目前僅支援泰國語、英語、越南語、印尼語和繁體中文。",
             });
-            console.log("Group settings updated:", groupSettings[groupId]);
           }
         }
       })
@@ -170,157 +145,9 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// 發送歡迎訊息和選單
-async function sendWelcomeMessage(groupId) {
-  const flexMessage = {
-    type: "flex",
-    altText: "歡迎使用翻譯機器人！",
-    contents: {
-      type: "bubble",
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          { type: "text", text: "歡迎使用翻譯機器人！", weight: "bold", size: "xl" },
-          { type: "text", text: "請點擊下方按鈕開始設定：", margin: "md" },
-          {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "開始設定",
-              data: `action=startSetting&groupId=${groupId}`,
-            },
-            margin: "md",
-          },
-        ],
-      },
-    },
-  };
-  try {
-    await lineClient.pushMessage(groupId, flexMessage);
-    console.log("Welcome message sent to group:", groupId);
-  } catch (error) {
-    console.error("Failed to send welcome message:", error);
-  }
-}
-
-// 發送整合的設定畫面
-async function sendSettingScreen(groupId, replyToken) {
-  const selectedIndustry = tempSettings[groupId]?.industry || "未選擇";
-  const selectedLanguage = tempSettings[groupId]?.targetLang || "未選擇";
-
-  const flexMessage = {
-    type: "flex",
-    altText: "請選擇產業類別和翻譯語言",
-    contents: {
-      type: "bubble",
-      header: {
-        type: "box",
-        layout: "vertical",
-        contents: [{ type: "text", text: "設定翻譯機器人", weight: "bold", size: "xl", color: "#ffffff" }],
-        backgroundColor: "#1DB446",
-      },
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          {
-            type: "text",
-            text: `目前選擇 - 產業：${selectedIndustry}，語言：${selectedLanguage}`,
-            size: "sm",
-            color: "#888888",
-            margin: "md",
-          },
-          {
-            type: "separator",
-            margin: "md",
-          },
-          {
-            type: "text",
-            text: "產業類別：",
-            weight: "bold",
-            size: "md",
-            margin: "md",
-          },
-          {
-            type: "box",
-            layout: "vertical",
-            contents: [
-              { type: "button", action: { type: "postback", label: "玻璃業", data: `action=selectIndustry&groupId=${groupId}&industry=玻璃業` }, style: selectedIndustry === "玻璃業" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "紡織業", data: `action=selectIndustry&groupId=${groupId}&industry=紡織業` }, style: selectedIndustry === "紡織業" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "CNC", data: `action=selectIndustry&groupId=${groupId}&industry=CNC` }, style: selectedIndustry === "CNC" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "畜牧業", data: `action=selectIndustry&groupId=${groupId}&industry=畜牧業` }, style: selectedIndustry === "畜牧業" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "農業", data: `action=selectIndustry&groupId=${groupId}&industry=農業` }, style: selectedIndustry === "農業" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "一般傳產", data: `action=selectIndustry&groupId=${groupId}&industry=一般傳產` }, style: selectedIndustry === "一般傳產" ? "primary" : "secondary", margin: "sm" },
-            ],
-          },
-          {
-            type: "text",
-            text: "翻譯語言：",
-            weight: "bold",
-            size: "md",
-            margin: "md",
-          },
-          {
-            type: "box",
-            layout: "vertical",
-            contents: [
-              { type: "button", action: { type: "postback", label: "繁體中文", data: `action=selectLanguage&groupId=${groupId}&language=繁體中文` }, style: selectedLanguage === "繁體中文" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "英文", data: `action=selectLanguage&groupId=${groupId}&language=英文` }, style: selectedLanguage === "英文" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "越南語", data: `action=selectLanguage&groupId=${groupId}&language=越南語` }, style: selectedLanguage === "越南語" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "泰國語", data: `action=selectLanguage&groupId=${groupId}&language=泰國語` }, style: selectedLanguage === "泰國語" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "印尼語", data: `action=selectLanguage&groupId=${groupId}&language=印尼語` }, style: selectedLanguage === "印尼語" ? "primary" : "secondary", margin: "sm" },
-              { type: "button", action: { type: "postback", label: "不翻譯", data: `action=selectLanguage&groupId=${groupId}&language=不翻譯` }, style: selectedLanguage === "不翻譯" ? "primary" : "secondary", margin: "sm" },
-            ],
-          },
-        ],
-      },
-      footer: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          {
-            type: "button",
-            action: {
-              type: "postback",
-              label: "確認",
-              data: `action=confirmSetting&groupId=${groupId}`,
-            },
-            style: "primary",
-            color: "#1DB446",
-          },
-          {
-            type: "text",
-            text: "選擇後畫面會更新以顯示目前選擇。",
-            size: "xs",
-            color: "#888888",
-            wrap: true,
-            margin: "sm",
-          },
-        ],
-      },
-    },
-  };
-  try {
-    console.log(`Sending setting screen to group ${groupId}`);
-    await lineClient.replyMessage(replyToken, flexMessage);
-    console.log("Setting screen sent to group:", groupId);
-  } catch (error) {
-    console.error("Failed to send setting screen:", error);
-  }
-}
-
-// DeepSeek 翻譯函數（加入快取和計時器）
-async function translateWithDeepSeek(text, targetLang, industry) {
-  const cacheKey = `${text}-${targetLang}-${industry}`; // 快取鍵
-  if (translationCache.has(cacheKey)) {
-    console.log("Cache hit:", cacheKey);
-    return translationCache.get(cacheKey); // 直接返回快取結果
-  }
-
+// 使用 DeepSeek API 偵測語言
+async function detectLanguageWithDeepSeek(text) {
   const apiUrl = "https://api.deepseek.com/v1/chat/completions";
-  const startTime = Date.now(); // 開始計時
-
   try {
     const response = await axios.post(
       apiUrl,
@@ -329,7 +156,47 @@ async function translateWithDeepSeek(text, targetLang, industry) {
         messages: [
           {
             role: "system",
-            content: `你是一個專業的翻譯員，專精於 ${industry} 產業。請將以下內容翻譯成 ${targetLang}，並確保使用正確的產業術語：`,
+            content:
+              "你是一個語言偵測專家。請識別以下文字的語言，並以 ISO 639-1 代碼回覆（例如：en, zh, th, vi, id）。",
+          },
+          { role: "user", content: text },
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const detectedLang = response.data.choices[0].message.content.trim();
+    return ["th", "en", "vi", "id", "zh-TW", "zh"].includes(detectedLang)
+      ? detectedLang
+      : null;
+  } catch (error) {
+    console.error("語言偵測錯誤:", error.message);
+    return null;
+  }
+}
+
+// 使用 DeepSeek API 進行翻譯
+async function translateWithDeepSeek(text, targetLang) {
+  const cacheKey = `${text}-${targetLang}`;
+  if (translationCache.has(cacheKey)) {
+    return translationCache.get(cacheKey);
+  }
+
+  const apiUrl = "https://api.deepseek.com/v1/chat/completions";
+  try {
+    const response = await axios.post(
+      apiUrl,
+      {
+        model: "deepseek-chat",
+        messages: [
+          {
+            role: "system",
+            content: `你是一個專業的翻譯員，請將以下內容翻譯成 ${targetLang}：`,
           },
           { role: "user", content: text },
         ],
@@ -343,16 +210,10 @@ async function translateWithDeepSeek(text, targetLang, industry) {
     );
 
     const result = response.data.choices[0].message.content.trim();
-    const endTime = Date.now(); // 結束計時
-    console.log(`Translated "${text}" to ${targetLang} in ${endTime - startTime}ms: ${result}`);
-
-    translationCache.set(cacheKey, result); // 將結果存入快取
+    translationCache.set(cacheKey, result);
     return result;
   } catch (error) {
-    console.error("Translation API error:", error.response?.data || error.message);
-    if (error.response?.data?.error?.message === "Insufficient Balance") {
-      return "翻譯失敗：API 餘額不足，請聯繫管理員充值。";
-    }
+    console.error("翻譯錯誤:", error.message);
     return "翻譯失敗，請稍後再試";
   }
 }
