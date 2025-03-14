@@ -3,7 +3,7 @@ const express = require("express");
 const axios = require("axios");
 const { Client } = require("@line/bot-sdk");
 const fs = require("fs").promises;
-const cron = require("node-cron"); // 用於定時任務
+const cron = require("node-cron");
 
 const app = express();
 app.use(express.json());
@@ -29,9 +29,9 @@ if (!DEEPSEEK_API_KEY) {
 }
 
 // 群組語言追蹤
-const groupLanguages = new Map();
+const groupLanguages = new Map(); // groupId -> Set of languages
+const groupSettings = new Map(); // groupId -> { selected: boolean }
 
-// 檔案路徑
 const STORAGE_FILE = "groupLanguages.json";
 
 // 載入群組語言資料
@@ -41,6 +41,7 @@ async function loadGroupLanguages() {
     const parsedData = JSON.parse(data);
     for (const [groupId, languages] of Object.entries(parsedData)) {
       groupLanguages.set(groupId, new Set(languages));
+      groupSettings.set(groupId, { selected: true }); // 假設已選擇
     }
     console.log("Loaded group languages:", parsedData);
   } catch (error) {
@@ -76,7 +77,7 @@ const translationCache = new Map();
 const processedReplyTokens = new Set();
 
 // 目標語言
-const targetLanguages = ["th", "en", "vi", "id"];
+const targetLanguages = ["th", "en", "vi", "id"]; // 泰國語、英語、越南語、印尼語
 
 // 語言名稱對應表
 const languageNames = {
@@ -88,13 +89,13 @@ const languageNames = {
   zh: "繁體中文",
 };
 
-// 測試路由，確認伺服器是否運行
+// 測試路由
 app.get("/ping", (req, res) => {
   console.log("Received ping request");
   res.send("Server is alive!");
 });
 
-// 定時任務，保持伺服器活躍（每 5 分鐘發送一次請求）
+// 定時任務，保持伺服器活躍
 cron.schedule("*/5 * * * *", async () => {
   try {
     await axios.get("http://localhost:3000/ping");
@@ -103,6 +104,93 @@ cron.schedule("*/5 * * * *", async () => {
     console.error("Error in keep-alive ping:", error.message);
   }
 });
+
+// 發送語言選擇選單
+async function sendLanguageSelection(groupId, replyToken) {
+  const selectedLanguages = groupLanguages.get(groupId) || new Set();
+  const flexMessage = {
+    type: "flex",
+    altText: "請選擇語言",
+    contents: {
+      type: "bubble",
+      header: {
+        type: "box",
+        layout: "vertical",
+        contents: [{ type: "text", text: "選擇翻譯語言", weight: "bold", size: "xl", color: "#ffffff" }],
+        backgroundColor: "#1DB446",
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "text",
+            text: "目前選擇：" + (selectedLanguages.size > 0 ? Array.from(selectedLanguages).map(lang => languageNames[lang]).join(", ") : "無"),
+            size: "sm",
+            color: "#888888",
+            margin: "md",
+          },
+          {
+            type: "separator",
+            margin: "md",
+          },
+          {
+            type: "text",
+            text: "請複選語言：",
+            weight: "bold",
+            size: "md",
+            margin: "md",
+          },
+          {
+            type: "box",
+            layout: "vertical",
+            contents: targetLanguages.map(lang => ({
+              type: "button",
+              action: {
+                type: "postback",
+                label: languageNames[lang],
+                data: `action=selectLanguage&groupId=${groupId}&language=${lang}`,
+              },
+              style: selectedLanguages.has(lang) ? "primary" : "secondary",
+              margin: "sm",
+            })),
+          },
+        ],
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "button",
+            action: {
+              type: "postback",
+              label: "確認",
+              data: `action=confirmSelection&groupId=${groupId}`,
+            },
+            style: "primary",
+            color: "#1DB446",
+            margin: "sm",
+          },
+          {
+            type: "text",
+            text: "選擇語言後點擊「確認」開始翻譯。",
+            size: "xs",
+            color: "#888888",
+            wrap: true,
+            margin: "sm",
+          },
+        ],
+      },
+    },
+  };
+  try {
+    console.log(`Sending language selection to group ${groupId}`);
+    await lineClient.replyMessage(replyToken, flexMessage);
+  } catch (error) {
+    console.error("Failed to send language selection:", error.message);
+  }
+}
 
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
@@ -122,10 +210,12 @@ app.post("/webhook", async (req, res) => {
         if (event.type === "join") {
           const groupId = event.source.groupId;
           console.log(`Bot joined group: ${groupId}`);
+          groupSettings.set(groupId, { selected: false }); // 初始未選擇
           await lineClient.pushMessage(groupId, {
             type: "text",
-            text: "歡迎使用翻譯機器人！我會自動偵測並翻譯訊息。",
+            text: "歡迎使用翻譯機器人！請選擇翻譯語言。",
           });
+          await sendLanguageSelection(groupId, null); // 推送選單
           return;
         }
 
@@ -136,6 +226,18 @@ app.post("/webhook", async (req, res) => {
           const replyToken = event.replyToken;
 
           console.log(`Processing message from group ${groupId}: ${userMessage}`);
+
+          // 檢查是否已選擇語言
+          const settings = groupSettings.get(groupId) || { selected: false };
+          if (!settings.selected) {
+            console.log(`Group ${groupId} has not selected languages yet.`);
+            await lineClient.replyMessage(replyToken, {
+              type: "text",
+              text: "請先選擇翻譯語言！",
+            });
+            await sendLanguageSelection(groupId, replyToken);
+            return;
+          }
 
           // 偵測語言
           console.log("Starting language detection...");
@@ -156,15 +258,9 @@ app.post("/webhook", async (req, res) => {
           }
           const languages = groupLanguages.get(groupId);
 
-          // 記錄該語言
-          let languagesUpdated = false;
+          // 記錄該語言（僅用於偵測，不影響選擇）
           if (targetLanguages.includes(detectedLang) || detectedLang === "zh-TW" || detectedLang === "zh") {
-            const previousSize = languages.size;
             languages.add(detectedLang);
-            if (languages.size > previousSize) {
-              languagesUpdated = true;
-              console.log(`Updated languages for group ${groupId}:`, Array.from(languages));
-            }
           }
 
           // 準備翻譯回覆
@@ -179,12 +275,12 @@ app.post("/webhook", async (req, res) => {
             console.log(`Translation to 繁體中文: ${translatedText}`);
           }
 
-          // 如果是繁體中文，根據群組語言翻譯成其他語言（排除繁體中文）
+          // 如果是繁體中文，根據選擇的語言翻譯（排除繁體中文）
           if (detectedLang === "zh-TW" || detectedLang === "zh") {
-            console.log("Message is in 繁體中文, translating to other languages...");
+            const selectedLangs = new Set(languages); // 使用選擇的語言
             const translations = await Promise.all(
-              Array.from(languages).map(async (lang) => {
-                if (lang !== "zh-TW" && lang !== "zh") {
+              Array.from(selectedLangs).map(async (lang) => {
+                if (lang !== "zh-TW" && lang !== "zh" && targetLanguages.includes(lang)) {
                   const targetLang = languageNames[lang];
                   console.log(`Translating to ${targetLang}...`);
                   const translatedText = await translateWithDeepSeek(userMessage, targetLang);
@@ -198,7 +294,7 @@ app.post("/webhook", async (req, res) => {
             if (filteredTranslations.length > 0) {
               replyText += filteredTranslations.join("\n");
             } else {
-              console.log("No languages to translate into.");
+              console.log("No selected languages to translate into.");
             }
           }
 
@@ -212,10 +308,32 @@ app.post("/webhook", async (req, res) => {
           } else {
             console.log("No reply needed for this message.");
           }
+        }
 
-          // 如果語言集合有更新，儲存到檔案
-          if (languagesUpdated) {
-            await saveGroupLanguages();
+        // 處理 Postback 事件
+        if (event.type === "postback") {
+          const data = event.postback.data;
+          const params = new URLSearchParams(data);
+          const action = params.get("action");
+          const groupId = params.get("groupId");
+
+          if (action === "selectLanguage") {
+            const lang = params.get("language");
+            if (!groupLanguages.has(groupId)) {
+              groupLanguages.set(groupId, new Set());
+            }
+            const languages = groupLanguages.get(groupId);
+            languages.add(lang);
+            console.log(`Selected language ${lang} for group ${groupId}`);
+            await sendLanguageSelection(groupId, event.replyToken); // 更新選單
+            await saveGroupLanguages(); // 儲存選擇
+          } else if (action === "confirmSelection") {
+            groupSettings.set(groupId, { selected: true });
+            console.log(`Confirmed language selection for group ${groupId}`);
+            await lineClient.replyMessage(event.replyToken, {
+              type: "text",
+              text: "語言選擇完成！現在開始翻譯。",
+            });
           }
         }
       })
@@ -249,7 +367,7 @@ async function detectLanguageWithDeepSeek(text) {
           Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
           "Content-Type": "application/json",
         },
-        timeout: 10000, // 設置 10 秒超時
+        timeout: 10000,
       }
     );
 
@@ -290,7 +408,7 @@ async function translateWithDeepSeek(text, targetLang) {
           Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
           "Content-Type": "application/json",
         },
-        timeout: 10000, // 設置 10 秒超時
+        timeout: 10000,
       }
     );
 
