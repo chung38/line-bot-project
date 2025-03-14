@@ -2,7 +2,8 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const { Client } = require("@line/bot-sdk");
-const fs = require("fs").promises; // 用於檔案操作
+const fs = require("fs").promises;
+const cron = require("node-cron"); // 用於定時任務
 
 const app = express();
 app.use(express.json());
@@ -27,7 +28,7 @@ if (!DEEPSEEK_API_KEY) {
   process.exit(1);
 }
 
-// 群組語言追蹤（改為從檔案載入）
+// 群組語言追蹤
 const groupLanguages = new Map();
 
 // 檔案路徑
@@ -75,7 +76,7 @@ const translationCache = new Map();
 const processedReplyTokens = new Set();
 
 // 目標語言
-const targetLanguages = ["th", "en", "vi", "id"]; // 泰國語、英語、越南語、印尼語
+const targetLanguages = ["th", "en", "vi", "id"];
 
 // 語言名稱對應表
 const languageNames = {
@@ -87,14 +88,32 @@ const languageNames = {
   zh: "繁體中文",
 };
 
+// 測試路由，確認伺服器是否運行
+app.get("/ping", (req, res) => {
+  console.log("Received ping request");
+  res.send("Server is alive!");
+});
+
+// 定時任務，保持伺服器活躍（每 5 分鐘發送一次請求）
+cron.schedule("*/5 * * * *", async () => {
+  try {
+    await axios.get("http://localhost:3000/ping");
+    console.log("Ping sent to keep server alive");
+  } catch (error) {
+    console.error("Error in keep-alive ping:", error.message);
+  }
+});
+
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
+  console.log("Received webhook events:", JSON.stringify(events, null, 2));
 
   try {
     await Promise.all(
       events.map(async (event) => {
         if (event.replyToken && processedReplyTokens.has(event.replyToken)) {
+          console.log("Skipping duplicate replyToken:", event.replyToken);
           return;
         }
         if (event.replyToken) processedReplyTokens.add(event.replyToken);
@@ -102,6 +121,7 @@ app.post("/webhook", async (req, res) => {
         // 處理加入群組事件
         if (event.type === "join") {
           const groupId = event.source.groupId;
+          console.log(`Bot joined group: ${groupId}`);
           await lineClient.pushMessage(groupId, {
             type: "text",
             text: "歡迎使用翻譯機器人！我會自動偵測並翻譯訊息。",
@@ -115,15 +135,20 @@ app.post("/webhook", async (req, res) => {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
 
+          console.log(`Processing message from group ${groupId}: ${userMessage}`);
+
           // 偵測語言
+          console.log("Starting language detection...");
           const detectedLang = await detectLanguageWithDeepSeek(userMessage);
           if (!detectedLang) {
+            console.log("Language detection failed for message:", userMessage);
             await lineClient.replyMessage(replyToken, {
               type: "text",
               text: "無法偵測語言，請稍後再試。",
             });
             return;
           }
+          console.log(`Detected language: ${detectedLang}`);
 
           // 初始化或獲取群組語言集合
           if (!groupLanguages.has(groupId)) {
@@ -131,32 +156,39 @@ app.post("/webhook", async (req, res) => {
           }
           const languages = groupLanguages.get(groupId);
 
-          // 記錄該語言（Set 自動去重）
+          // 記錄該語言
           let languagesUpdated = false;
           if (targetLanguages.includes(detectedLang) || detectedLang === "zh-TW" || detectedLang === "zh") {
             const previousSize = languages.size;
             languages.add(detectedLang);
             if (languages.size > previousSize) {
               languagesUpdated = true;
+              console.log(`Updated languages for group ${groupId}:`, Array.from(languages));
             }
           }
 
           // 準備翻譯回覆
           let replyText = "";
+          console.log("Starting translation process...");
 
           // 如果是目標語言，翻譯成繁體中文
           if (targetLanguages.includes(detectedLang)) {
+            console.log(`Translating from ${detectedLang} to 繁體中文...`);
             const translatedText = await translateWithDeepSeek(userMessage, "繁體中文");
             replyText += `【繁體中文】${translatedText}\n`;
+            console.log(`Translation to 繁體中文: ${translatedText}`);
           }
 
           // 如果是繁體中文，根據群組語言翻譯成其他語言（排除繁體中文）
           if (detectedLang === "zh-TW" || detectedLang === "zh") {
+            console.log("Message is in 繁體中文, translating to other languages...");
             const translations = await Promise.all(
               Array.from(languages).map(async (lang) => {
-                if (lang !== "zh-TW" && lang !== "zh") { // 避免重複回覆繁體中文
+                if (lang !== "zh-TW" && lang !== "zh") {
                   const targetLang = languageNames[lang];
+                  console.log(`Translating to ${targetLang}...`);
                   const translatedText = await translateWithDeepSeek(userMessage, targetLang);
+                  console.log(`Translation to ${targetLang}: ${translatedText}`);
                   return `【${languageNames[lang]}】${translatedText}`;
                 }
                 return null;
@@ -165,15 +197,20 @@ app.post("/webhook", async (req, res) => {
             const filteredTranslations = translations.filter((t) => t !== null);
             if (filteredTranslations.length > 0) {
               replyText += filteredTranslations.join("\n");
+            } else {
+              console.log("No languages to translate into.");
             }
           }
 
           // 發送回覆
           if (replyText) {
+            console.log("Sending reply:", replyText.trim());
             await lineClient.replyMessage(replyToken, {
               type: "text",
               text: replyText.trim(),
             });
+          } else {
+            console.log("No reply needed for this message.");
           }
 
           // 如果語言集合有更新，儲存到檔案
@@ -185,7 +222,7 @@ app.post("/webhook", async (req, res) => {
     );
     res.sendStatus(200);
   } catch (error) {
-    console.error("Webhook error:", error);
+    console.error("Webhook error:", error.message);
     res.sendStatus(500);
   }
 });
@@ -212,6 +249,7 @@ async function detectLanguageWithDeepSeek(text) {
           Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
           "Content-Type": "application/json",
         },
+        timeout: 10000, // 設置 10 秒超時
       }
     );
 
@@ -220,7 +258,7 @@ async function detectLanguageWithDeepSeek(text) {
       ? detectedLang
       : null;
   } catch (error) {
-    console.error("語言偵測錯誤:", error.message);
+    console.error("Language detection error:", error.message);
     return null;
   }
 }
@@ -229,6 +267,7 @@ async function detectLanguageWithDeepSeek(text) {
 async function translateWithDeepSeek(text, targetLang) {
   const cacheKey = `${text}-${targetLang}`;
   if (translationCache.has(cacheKey)) {
+    console.log(`Cache hit for ${cacheKey}`);
     return translationCache.get(cacheKey);
   }
 
@@ -251,14 +290,19 @@ async function translateWithDeepSeek(text, targetLang) {
           Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
           "Content-Type": "application/json",
         },
+        timeout: 10000, // 設置 10 秒超時
       }
     );
 
     const result = response.data.choices[0].message.content.trim();
     translationCache.set(cacheKey, result);
+    console.log(`Cached translation for ${cacheKey}: ${result}`);
     return result;
   } catch (error) {
-    console.error("翻譯錯誤:", error.message);
+    console.error("Translation error:", error.message);
+    if (error.response && error.response.data) {
+      console.error("DeepSeek API error details:", error.response.data);
+    }
     return "翻譯失敗，請稍後再試";
   }
 }
