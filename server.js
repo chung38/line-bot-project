@@ -186,7 +186,11 @@ async function sendLanguageSelection(groupId, replyToken) {
   };
   try {
     console.log(`Sending language selection to group ${groupId}`);
-    await lineClient.replyMessage(replyToken, flexMessage);
+    if (replyToken) {
+      await lineClient.replyMessage(replyToken, flexMessage);
+    } else {
+      await lineClient.pushMessage(groupId, flexMessage);
+    }
   } catch (error) {
     console.error("Failed to send language selection:", error.message);
   }
