@@ -98,7 +98,7 @@ app.get("/ping", (req, res) => {
 // 定時任務，保持伺服器活躍
 cron.schedule("*/5 * * * *", async () => {
   try {
-    await axios.get("http://localhost:3000/ping");
+    await axios.get("https://line-bot-project-a0bs.onrender.com/ping");
     console.log("Ping sent to keep server alive");
   } catch (error) {
     console.error("Error in keep-alive ping:", error.message);
