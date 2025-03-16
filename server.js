@@ -160,7 +160,7 @@ app.get("/ping", (req, res) => {
 cron.schedule("*/5 * * * *", async () => {
   try {
     // 替換為你的實際伺服器 URL，例如 Render 的 URL
-    await axios.get("https://line-bot-project-a0bs.onrender.com/ping");
+    await axios.get("https://your-app.onrender.com/ping");
     console.log("Ping sent to keep server alive");
   } catch (error) {
     console.error("Error in keep-alive ping:", error.message);
@@ -188,7 +188,7 @@ app.post("/webhook", async (req, res) => {
           console.log(`Bot joined group: ${groupId}`);
           await lineClient.pushMessage(groupId, {
             type: "text",
-            text: "歡迎使用翻譯機器人！請選擇翻譯語言。",
+            text: "歡迎使用翻譯機器人！請選擇翻譯語言。\n隨時輸入「!選單」或「!設定」可重新顯示選單。",
           });
           await sendLanguageSelection(groupId);
           return;
@@ -217,7 +217,7 @@ app.post("/webhook", async (req, res) => {
           } else if (action === "confirm" && selectedGroupId === groupId) {
             await lineClient.pushMessage(groupId, {
               type: "text",
-              text: "語言選擇已確認！",
+              text: "語言選擇已確認！隨時輸入「!選單」或「!設定」可重新顯示選單。",
             });
           }
           return;
@@ -228,6 +228,12 @@ app.post("/webhook", async (req, res) => {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
 
+          // 檢查是否為重新顯示選單的指令
+          if (userMessage === "!選單" || userMessage === "!設定") {
+            await sendLanguageSelection(groupId);
+            return;
+          }
+
           // 獲取群組選擇的語言
           const selectedLanguages = groupLanguages.get(groupId) || new Set();
 
@@ -235,7 +241,7 @@ app.post("/webhook", async (req, res) => {
           if (selectedLanguages.size === 0) {
             await lineClient.replyMessage(replyToken, {
               type: "text",
-              text: "請先選擇翻譯語言！",
+              text: "請先選擇翻譯語言！隨時輸入「!選單」或「!設定」可重新顯示選單。",
             });
             await sendLanguageSelection(groupId);
             return;
@@ -260,7 +266,7 @@ app.post("/webhook", async (req, res) => {
           } else if (supportedLanguages.includes(detectedLang)) {
             // 如果是英語、泰語、越語、印尼語，翻譯成繁體中文
             const translatedText = await translateWithDeepSeek(userMessage, "繁體中文");
-            replyText = `${translatedText}`;
+            replyText = `【繁體中文】${translatedText}`;
           }
 
           // 發送回覆
