@@ -3,6 +3,7 @@ const express = require("express");
 const axios = require("axios");
 const { Client } = require("@line/bot-sdk");
 const cron = require("node-cron");
+const fs = require("fs").promises;
 
 const app = express();
 app.use(express.json());
@@ -47,6 +48,43 @@ const languageNames = {
   id: "印尼語",
   "zh-TW": "繁體中文",
 };
+
+const STORAGE_FILE = "groupLanguages.json";
+
+// 載入群組語言資料
+async function loadGroupLanguages() {
+  try {
+    const data = await fs.readFile(STORAGE_FILE, "utf8");
+    const parsedData = JSON.parse(data);
+    for (const [groupId, languages] of Object.entries(parsedData)) {
+      groupLanguages.set(groupId, new Set(languages));
+    }
+    console.log("Loaded group languages:", parsedData);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      console.log("No existing group languages file found, starting fresh.");
+    } else {
+      console.error("Error loading group languages:", error.message);
+    }
+  }
+}
+
+// 儲存群組語言資料
+async function saveGroupLanguages() {
+  try {
+    const dataToSave = {};
+    for (const [groupId, languages] of groupLanguages.entries()) {
+      dataToSave[groupId] = Array.from(languages);
+    }
+    await fs.writeFile(STORAGE_FILE, JSON.stringify(dataToSave, null, 2));
+    console.log("Saved group languages:", dataToSave);
+  } catch (error) {
+    console.error("Error saving group languages:", error.message);
+  }
+}
+
+// 啟動時載入資料
+loadGroupLanguages();
 
 // 發送語言選擇選單
 async function sendLanguageSelection(groupId) {
@@ -219,6 +257,7 @@ app.post("/webhook", async (req, res) => {
               type: "text",
               text: "語言選擇已確認！隨時輸入「!選單」或「!設定」可重新顯示選單。",
             });
+            await saveGroupLanguages(); // 儲存語言選擇
           }
           return;
         }
@@ -359,4 +398,9 @@ async function translateWithDeepSeek(text, targetLang) {
 
 // 啟動伺服器
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`🚀 伺服器正在運行，埠號：${port}`));
+app.listen(port, () => {
+  console.log(`🚀 伺服器正在運行，埠號：${port}`);
+  if (groupLanguages.size === 0) {
+    console.log("Warning: No group languages loaded. Check storage file or set languages manually.");
+  }
+});
