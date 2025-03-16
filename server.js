@@ -185,10 +185,12 @@ async function sendLanguageSelection(groupId) {
     },
   };
   try {
+    console.log(`Sending language selection to group ${groupId}`);
     await withRetry(() => lineClient.pushMessage(groupId, flexMessage));
     console.log(`Sent language selection in ${Date.now() - startTime}ms`);
   } catch (error) {
-    console.error("Failed to send language selection:", error.message, error.response?.status, error.response?.headers);
+    console.error("Failed to send language selection:", error.message, error.status, error.headers, error.response?.data);
+    throw error;
   }
 }
 
@@ -215,14 +217,17 @@ function splitSentences(text) {
 }
 
 // 帶有重試的 API 請求
-async function withRetry(fn, maxRetries = 3) {
+async function withRetry(fn, maxRetries = 3, baseDelay = 5000) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       return await fn();
     } catch (error) {
-      if (error.response?.status === 429) {
-        const retryAfter = parseInt(error.response.headers["retry-after"]) || 5; // 從 headers 獲取或預設 5 秒
-        console.warn(`Rate limit hit, retrying after ${retryAfter} seconds... Attempt ${i + 1}/${maxRetries}`, error.response.headers);
+      // 處理 LINE SDK 和 axios 的錯誤格式
+      const status = error.status || error.response?.status;
+      const headers = error.headers || error.response?.headers;
+      if (status === 429) {
+        const retryAfter = parseInt(headers?.["retry-after"]) || baseDelay / 1000; // 從 headers 獲取或預設 5 秒
+        console.warn(`Rate limit hit, retrying after ${retryAfter} seconds... Attempt ${i + 1}/${maxRetries}`, headers);
         await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
       } else {
         throw error;
@@ -250,13 +255,14 @@ app.post("/webhook", async (req, res) => {
 
         // 處理加入群組事件
         if (event.type === "join") {
+          console.log(`Bot joined group: ${groupId}`);
           await withRetry(() =>
             lineClient.pushMessage(groupId, {
               type: "text",
               text: "歡迎使用翻譯機器人！請輸入「!選單」或「!設定」選擇翻譯語言。",
             })
           );
-          return; // 不自動發送語言選單
+          return;
         }
 
         // 處理 Postback 事件（語言選擇）
@@ -372,7 +378,11 @@ app.post("/webhook", async (req, res) => {
     );
     res.sendStatus(200);
   } catch (error) {
-    console.error("Webhook error:", error.message, error.response?.status, error.response?.headers);
+    // 改進錯誤處理，適應 LINE SDK 和 axios 的錯誤格式
+    const status = error.status || error.response?.status || "N/A";
+    const headers = error.headers || error.response?.headers || "N/A";
+    const details = error.response?.data || error.message;
+    console.error("Webhook error:", error.message, "Status:", status, "Headers:", headers, "Details:", details);
     res.sendStatus(500);
   }
 });
