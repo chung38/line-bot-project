@@ -198,7 +198,7 @@ app.get("/ping", (req, res) => {
 cron.schedule("*/5 * * * *", async () => {
   try {
     // 替換為你的實際伺服器 URL，例如 Render 的 URL
-    await axios.get("https://your-app.onrender.com/ping");
+    await axios.get("https://line-bot-project-a0bs.onrender.com/ping");
     console.log("Ping sent to keep server alive");
   } catch (error) {
     console.error("Error in keep-alive ping:", error.message);
