@@ -189,7 +189,7 @@ async function sendLanguageSelection(groupId) {
     await withRetry(() => lineClient.pushMessage(groupId, flexMessage));
     console.log(`Sent language selection in ${Date.now() - startTime}ms`);
   } catch (error) {
-    console.error("Failed to send language selection:", error.message, error.status, error.headers, error.response?.data);
+    console.error("Failed to send language selection:", error.message, error.statusCode || error.response?.status || "N/A", error.response?.headers || "N/A", error.response?.data || error.stack);
     throw error;
   }
 }
@@ -200,7 +200,7 @@ app.get("/ping", (req, res) => {
 });
 
 // 定時任務，保持伺服器活躍
-cron.schedule("*/5 * * * *", async () => {
+cron.schedule("* * * * *", async () => { // 每分鐘 ping 一次
   try {
     await axios.get("https://line-bot-project-a0bs.onrender.com/ping");
     console.log("Ping sent to keep server alive");
@@ -217,16 +217,16 @@ function splitSentences(text) {
 }
 
 // 帶有重試的 API 請求
-async function withRetry(fn, maxRetries = 3, baseDelay = 5000) {
+async function withRetry(fn, maxRetries = 3, baseDelay = 10000) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       return await fn();
     } catch (error) {
-      // 處理 LINE SDK 和 axios 的錯誤格式
-      const status = error.status || error.response?.status;
-      const headers = error.headers || error.response?.headers;
+      // 適應 LINE SDK 和 axios 的錯誤格式
+      const status = error.statusCode || error.response?.status || error.code || "N/A";
+      const headers = error.response?.headers || error.headers || "N/A";
       if (status === 429) {
-        const retryAfter = parseInt(headers?.["retry-after"]) || baseDelay / 1000; // 從 headers 獲取或預設 5 秒
+        const retryAfter = parseInt(headers?.["retry-after"]) || (baseDelay / 1000); // 從 headers 獲取或預設 10 秒
         console.warn(`Rate limit hit, retrying after ${retryAfter} seconds... Attempt ${i + 1}/${maxRetries}`, headers);
         await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
       } else {
@@ -239,6 +239,9 @@ async function withRetry(fn, maxRetries = 3, baseDelay = 5000) {
 
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
+  // 添加啟動延遲，確保伺服器準備好
+  await new Promise(resolve => setTimeout(resolve, 5000)); // 延遲 5 秒
+
   const events = req.body.events;
 
   try {
@@ -379,9 +382,9 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(200);
   } catch (error) {
     // 改進錯誤處理，適應 LINE SDK 和 axios 的錯誤格式
-    const status = error.status || error.response?.status || "N/A";
-    const headers = error.headers || error.response?.headers || "N/A";
-    const details = error.response?.data || error.message;
+    const status = error.statusCode || error.response?.status || error.code || "N/A";
+    const headers = error.response?.headers || error.headers || "N/A";
+    const details = error.response?.data || error.stack || error.message;
     console.error("Webhook error:", error.message, "Status:", status, "Headers:", headers, "Details:", details);
     res.sendStatus(500);
   }
