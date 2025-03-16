@@ -41,7 +41,7 @@ const processedReplyTokens = new Set();
 // 支援的語言
 const supportedLanguages = ["en", "th", "vi", "id"];
 
-// 語言名稱對應表（僅用於選單顯示）
+// 語言名稱對應表
 const languageNames = {
   en: "英語",
   th: "泰語",
@@ -296,14 +296,15 @@ app.post("/webhook", async (req, res) => {
             if (!selectedLanguages.has("no-translate")) {
               const translations = await Promise.all(
                 Array.from(selectedLanguages).map(async (lang) => {
-                  return await translateWithDeepSeek(userMessage, languageNames[lang]);
+                  const translatedText = await translateWithDeepSeek(userMessage, languageNames[lang]);
+                  return `【${languageNames[lang]}】${translatedText}`; // 恢復語言標籤
                 })
               );
               replyText = translations.join("\n");
             }
           } else if (supportedLanguages.includes(detectedLang)) {
             const translatedText = await translateWithDeepSeek(userMessage, "繁體中文");
-            replyText = translatedText;
+            replyText = translatedText; // 不顯示【繁體中文】標籤
           }
 
           if (replyText) {
