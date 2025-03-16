@@ -260,7 +260,7 @@ app.post("/webhook", async (req, res) => {
           } else if (supportedLanguages.includes(detectedLang)) {
             // 如果是英語、泰語、越語、印尼語，翻譯成繁體中文
             const translatedText = await translateWithDeepSeek(userMessage, "繁體中文");
-            replyText = `【繁體中文】${translatedText}`;
+            replyText = `${translatedText}`;
           }
 
           // 發送回覆
