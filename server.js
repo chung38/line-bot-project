@@ -215,14 +215,14 @@ function splitSentences(text) {
 }
 
 // 帶有重試的 API 請求
-async function withRetry(fn, maxRetries = 3, delay = 1000) {
+async function withRetry(fn, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       return await fn();
     } catch (error) {
       if (error.response?.status === 429) {
-        const retryAfter = error.response.headers["retry-after"] || 5; // 預設 5 秒
-        console.warn(`Rate limit hit, retrying after ${retryAfter} seconds... Attempt ${i + 1}/${maxRetries}`);
+        const retryAfter = parseInt(error.response.headers["retry-after"]) || 5; // 從 headers 獲取或預設 5 秒
+        console.warn(`Rate limit hit, retrying after ${retryAfter} seconds... Attempt ${i + 1}/${maxRetries}`, error.response.headers);
         await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
       } else {
         throw error;
@@ -253,11 +253,10 @@ app.post("/webhook", async (req, res) => {
           await withRetry(() =>
             lineClient.pushMessage(groupId, {
               type: "text",
-              text: "歡迎使用翻譯機器人！請選擇翻譯語言。\n隨時輸入「!選單」或「!設定」可重新顯示選單。",
+              text: "歡迎使用翻譯機器人！請輸入「!選單」或「!設定」選擇翻譯語言。",
             })
           );
-          await sendLanguageSelection(groupId); // 顯示語言選擇但不預設
-          return;
+          return; // 不自動發送語言選單
         }
 
         // 處理 Postback 事件（語言選擇）
@@ -311,10 +310,9 @@ app.post("/webhook", async (req, res) => {
             await withRetry(() =>
               lineClient.replyMessage(replyToken, {
                 type: "text",
-                text: "請先選擇並確認翻譯語言！隨時輸入「!選單」或「!設定」可重新顯示選單。",
+                text: "請先選擇並確認翻譯語言！請輸入「!選單」或「!設定」選擇語言。",
               })
             );
-            await sendLanguageSelection(groupId);
             return;
           }
 
@@ -443,7 +441,7 @@ async function translateWithDeepSeek(text, targetLang) {
 }
 
 // 啟動伺服器
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 10000;
 app.listen(port, () => {
   console.log(`🚀 伺服器正在運行，埠號：${port}`);
   if (groupLanguages.size === 0) {
