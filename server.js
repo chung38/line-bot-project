@@ -52,15 +52,16 @@ const languageNames = {
 
 const STORAGE_FILE = "groupLanguages.json";
 
-// 載入群組語言資料
+// 載入群組語言資料（僅在啟動時執行）
 async function loadGroupLanguages() {
+  const startTime = Date.now();
   try {
     const data = await fs.readFile(STORAGE_FILE, "utf8");
     const parsedData = JSON.parse(data);
     for (const [groupId, languages] of Object.entries(parsedData)) {
       groupLanguages.set(groupId, new Set(languages));
     }
-    console.log("Loaded group languages:", parsedData);
+    console.log(`Loaded group languages in ${Date.now() - startTime}ms:`, parsedData);
   } catch (error) {
     if (error.code === "ENOENT") {
       console.log("No existing group languages file found, starting fresh.");
@@ -72,13 +73,14 @@ async function loadGroupLanguages() {
 
 // 儲存群組語言資料
 async function saveGroupLanguages() {
+  const startTime = Date.now();
   try {
     const dataToSave = {};
     for (const [groupId, languages] of groupLanguages.entries()) {
       dataToSave[groupId] = Array.from(languages);
     }
     await fs.writeFile(STORAGE_FILE, JSON.stringify(dataToSave, null, 2));
-    console.log("Saved group languages:", dataToSave);
+    console.log(`Saved group languages in ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error("Error saving group languages:", error.message);
   }
@@ -89,6 +91,7 @@ loadGroupLanguages();
 
 // 發送語言選擇選單
 async function sendLanguageSelection(groupId) {
+  const startTime = Date.now();
   const selectedLanguages = groupLanguages.get(groupId) || new Set();
   const flexMessage = {
     type: "flex",
@@ -181,9 +184,8 @@ async function sendLanguageSelection(groupId) {
     },
   };
   try {
-    console.log(`Sending language selection to group ${groupId}`);
     await lineClient.pushMessage(groupId, flexMessage);
-    console.log("Language selection sent successfully");
+    console.log(`Sent language selection in ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error("Failed to send language selection:", error.message);
   }
@@ -191,7 +193,6 @@ async function sendLanguageSelection(groupId) {
 
 // 保持伺服器活躍的路由
 app.get("/ping", (req, res) => {
-  console.log("Received ping request");
   res.send("Server is alive!");
 });
 
@@ -208,11 +209,11 @@ cron.schedule("*/5 * * * *", async () => {
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
-  console.log("Received webhook events:", JSON.stringify(events, null, 2));
 
   try {
     await Promise.all(
       events.map(async (event) => {
+        const startTime = Date.now();
         if (event.replyToken && processedReplyTokens.has(event.replyToken)) {
           console.log("Skipping duplicate replyToken:", event.replyToken);
           return;
@@ -223,7 +224,6 @@ app.post("/webhook", async (req, res) => {
 
         // 處理加入群組事件
         if (event.type === "join") {
-          console.log(`Bot joined group: ${groupId}`);
           await lineClient.pushMessage(groupId, {
             type: "text",
             text: "歡迎使用翻譯機器人！請選擇翻譯語言。\n隨時輸入「!選單」或「!設定」可重新顯示選單。",
@@ -266,7 +266,6 @@ app.post("/webhook", async (req, res) => {
         if (event.type === "message" && event.message.type === "text") {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
-          const startTime = Date.now();
 
           // 檢查是否為重新顯示選單的指令
           if (userMessage === "!選單" || userMessage === "!設定") {
@@ -288,28 +287,36 @@ app.post("/webhook", async (req, res) => {
           }
 
           // 偵測訊息語言
+          const detectStart = Date.now();
           const detectedLang = await detectLanguageWithDeepSeek(userMessage);
+          console.log(`Language detection took ${Date.now() - detectStart}ms`);
 
           let replyText = "";
 
           if (detectedLang === "zh-TW" || detectedLang === "zh") {
             if (!selectedLanguages.has("no-translate")) {
+              const translationStart = Date.now();
               const translations = await Promise.all(
                 Array.from(selectedLanguages).map(async (lang) => {
                   const translatedText = await translateWithDeepSeek(userMessage, languageNames[lang]);
-                  return `【${languageNames[lang]}】${translatedText}`; // 恢復語言標籤
+                  return `【${languageNames[lang]}】${translatedText}`;
                 })
               );
+              console.log(`Translations took ${Date.now() - translationStart}ms`);
               replyText = translations.join("\n");
             }
           } else if (supportedLanguages.includes(detectedLang)) {
+            const translationStart = Date.now();
             const translatedText = await translateWithDeepSeek(userMessage, "繁體中文");
+            console.log(`Translation to zh-TW took ${Date.now() - translationStart}ms`);
             replyText = translatedText; // 不顯示【繁體中文】標籤
           }
 
           if (replyText) {
-            console.log(`Response time: ${Date.now() - startTime}ms`);
+            const replyStart = Date.now();
             await lineClient.replyMessage(replyToken, { type: "text", text: replyText.trim() });
+            console.log(`Reply sent in ${Date.now() - replyStart}ms`);
+            console.log(`Total response time: ${Date.now() - startTime}ms`);
           }
         }
       })
