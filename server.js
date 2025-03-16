@@ -33,6 +33,7 @@ const groupLanguages = new Map();
 
 // 翻譯結果快取
 const translationCache = new Map();
+const languageDetectionCache = new Map(); // 群組層級的語言偵測快取
 setInterval(() => translationCache.clear(), 24 * 60 * 60 * 1000); // 每天清除快取
 
 // 已處理的 replyToken 集合
@@ -184,10 +185,10 @@ async function sendLanguageSelection(groupId) {
     },
   };
   try {
-    await lineClient.pushMessage(groupId, flexMessage);
+    await withRetry(() => lineClient.pushMessage(groupId, flexMessage));
     console.log(`Sent language selection in ${Date.now() - startTime}ms`);
   } catch (error) {
-    console.error("Failed to send language selection:", error.message);
+    console.error("Failed to send language selection:", error.message, error.response?.status, error.response?.headers);
   }
 }
 
@@ -205,6 +206,31 @@ cron.schedule("*/5 * * * *", async () => {
     console.error("Error in keep-alive ping:", error.message);
   }
 });
+
+// 按句子分割訊息
+function splitSentences(text) {
+  // 使用正則表達式按句號、驚嘆號、問號分割，並保留分隔符
+  const sentences = text.split(/(?<=[。！？])/).filter(sentence => sentence.trim().length > 0);
+  return sentences.map(sentence => sentence.trim());
+}
+
+// 帶有重試的 API 請求
+async function withRetry(fn, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (error.response?.status === 429) {
+        const retryAfter = parseInt(error.response.headers["retry-after"]) || 5; // 從 headers 獲取或預設 5 秒
+        console.warn(`Rate limit hit, retrying after ${retryAfter} seconds... Attempt ${i + 1}/${maxRetries}`, error.response.headers);
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      } else {
+        throw error;
+      }
+    }
+  }
+  throw new Error("Max retries reached");
+}
 
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
@@ -224,12 +250,13 @@ app.post("/webhook", async (req, res) => {
 
         // 處理加入群組事件
         if (event.type === "join") {
-          await lineClient.pushMessage(groupId, {
-            type: "text",
-            text: "歡迎使用翻譯機器人！請選擇翻譯語言。\n隨時輸入「!選單」或「!設定」可重新顯示選單。",
-          });
-          await sendLanguageSelection(groupId);
-          return;
+          await withRetry(() =>
+            lineClient.pushMessage(groupId, {
+              type: "text",
+              text: "歡迎使用翻譯機器人！請輸入「!選單」或「!設定」選擇翻譯語言。",
+            })
+          );
+          return; // 不自動發送語言選單
         }
 
         // 處理 Postback 事件（語言選擇）
@@ -253,10 +280,12 @@ app.post("/webhook", async (req, res) => {
             }
             await sendLanguageSelection(groupId);
           } else if (action === "confirm" && selectedGroupId === groupId) {
-            await lineClient.pushMessage(groupId, {
-              type: "text",
-              text: "語言選擇已確認！隨時輸入「!選單」或「!設定」可重新顯示選單。",
-            });
+            await withRetry(() =>
+              lineClient.pushMessage(groupId, {
+                type: "text",
+                text: "語言選擇已確認！隨時輸入「!選單」或「!設定」可重新顯示選單。",
+              })
+            );
             await saveGroupLanguages();
           }
           return;
@@ -276,45 +305,65 @@ app.post("/webhook", async (req, res) => {
           // 獲取群組選擇的語言
           const selectedLanguages = groupLanguages.get(groupId) || new Set();
 
-          // 檢查是否已選擇語言
-          if (selectedLanguages.size === 0) {
-            await lineClient.replyMessage(replyToken, {
-              type: "text",
-              text: "請先選擇翻譯語言！隨時輸入「!選單」或「!設定」可重新顯示選單。",
-            });
-            await sendLanguageSelection(groupId);
+          // 檢查是否已選擇並確認語言
+          if (selectedLanguages.size === 0 || selectedLanguages.has("no-translate")) {
+            await withRetry(() =>
+              lineClient.replyMessage(replyToken, {
+                type: "text",
+                text: "請先選擇並確認翻譯語言！請輸入「!選單」或「!設定」選擇語言。",
+              })
+            );
             return;
           }
 
-          // 偵測訊息語言
+          // 按句子分割訊息
+          const sentences = splitSentences(userMessage);
+
+          // 使用群組層級的語言偵測快取
           const detectStart = Date.now();
-          const detectedLang = await detectLanguageWithDeepSeek(userMessage);
-          console.log(`Language detection took ${Date.now() - detectStart}ms`);
+          let detectedLang = languageDetectionCache.get(groupId);
+          if (!detectedLang) {
+            detectedLang = await withRetry(() => detectLanguageWithDeepSeek(userMessage));
+            languageDetectionCache.set(groupId, detectedLang);
+            console.log(`Language detection took ${Date.now() - detectStart}ms`);
+          }
 
           let replyText = "";
 
           if (detectedLang === "zh-TW" || detectedLang === "zh") {
-            if (!selectedLanguages.has("no-translate")) {
-              const translationStart = Date.now();
-              const translations = await Promise.all(
+            const translationStart = Date.now();
+            const translations = [];
+            for (const sentence of sentences) {
+              // 添加原始句子
+              translations.push(sentence);
+              // 為每個句子翻譯成選擇的語言
+              const sentenceTranslations = await Promise.all(
                 Array.from(selectedLanguages).map(async (lang) => {
-                  const translatedText = await translateWithDeepSeek(userMessage, languageNames[lang]);
+                  const translatedText = await withRetry(() => translateWithDeepSeek(sentence, languageNames[lang]));
                   return `【${languageNames[lang]}】${translatedText}`;
                 })
               );
-              console.log(`Translations took ${Date.now() - translationStart}ms`);
-              replyText = translations.join("\n");
+              translations.push(...sentenceTranslations);
             }
+            console.log(`Translations took ${Date.now() - translationStart}ms`);
+            replyText = translations.join("\n");
           } else if (supportedLanguages.includes(detectedLang)) {
             const translationStart = Date.now();
-            const translatedText = await translateWithDeepSeek(userMessage, "繁體中文");
+            const translations = [];
+            for (const sentence of sentences) {
+              // 添加原始句子
+              translations.push(sentence);
+              // 翻譯成繁體中文
+              const translatedText = await withRetry(() => translateWithDeepSeek(sentence, "繁體中文"));
+              translations.push(translatedText); // 不顯示【繁體中文】標籤
+            }
             console.log(`Translation to zh-TW took ${Date.now() - translationStart}ms`);
-            replyText = translatedText; // 不顯示【繁體中文】標籤
+            replyText = translations.join("\n");
           }
 
           if (replyText) {
             const replyStart = Date.now();
-            await lineClient.replyMessage(replyToken, { type: "text", text: replyText.trim() });
+            await withRetry(() => lineClient.replyMessage(replyToken, { type: "text", text: replyText.trim() }));
             console.log(`Reply sent in ${Date.now() - replyStart}ms`);
             console.log(`Total response time: ${Date.now() - startTime}ms`);
           }
@@ -323,7 +372,7 @@ app.post("/webhook", async (req, res) => {
     );
     res.sendStatus(200);
   } catch (error) {
-    console.error("Webhook error:", error.message);
+    console.error("Webhook error:", error.message, error.response?.status, error.response?.headers);
     res.sendStatus(500);
   }
 });
@@ -331,8 +380,8 @@ app.post("/webhook", async (req, res) => {
 // 使用 DeepSeek API 偵測語言
 async function detectLanguageWithDeepSeek(text) {
   const apiUrl = "https://api.deepseek.com/v1/chat/completions";
-  try {
-    const response = await axios.post(
+  return withRetry(() =>
+    axios.post(
       apiUrl,
       {
         model: "deepseek-chat",
@@ -350,12 +399,8 @@ async function detectLanguageWithDeepSeek(text) {
           "Content-Type": "application/json",
         },
       }
-    );
-    return response.data.choices[0].message.content.trim();
-  } catch (error) {
-    console.error("語言偵測錯誤:", error.message);
-    return null;
-  }
+    ).then(response => response.data.choices[0].message.content.trim())
+  );
 }
 
 // 使用 DeepSeek API 進行翻譯
@@ -367,8 +412,8 @@ async function translateWithDeepSeek(text, targetLang) {
   }
 
   const apiUrl = "https://api.deepseek.com/v1/chat/completions";
-  try {
-    const response = await axios.post(
+  return withRetry(() =>
+    axios.post(
       apiUrl,
       {
         model: "deepseek-chat",
@@ -386,20 +431,17 @@ async function translateWithDeepSeek(text, targetLang) {
           "Content-Type": "application/json",
         },
       }
-    );
-
-    const result = response.data.choices[0].message.content.trim();
-    translationCache.set(cacheKey, result);
-    console.log(`Cached translation for ${cacheKey}: ${result}`);
-    return result;
-  } catch (error) {
-    console.error("翻譯錯誤:", error.message);
-    return "翻譯失敗，請稍後再試";
-  }
+    ).then(response => {
+      const result = response.data.choices[0].message.content.trim();
+      translationCache.set(cacheKey, result);
+      console.log(`Cached translation for ${cacheKey}: ${result}`);
+      return result;
+    })
+  );
 }
 
 // 啟動伺服器
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 10000;
 app.listen(port, () => {
   console.log(`🚀 伺服器正在運行，埠號：${port}`);
   if (groupLanguages.size === 0) {
