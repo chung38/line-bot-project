@@ -15,7 +15,16 @@
     "axios": "^1.8.2",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "limiter": "^3.0.0",
     "lru-cache": "^11.0.2",
     "node-cron": "^3.0.3"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chung38/line-bot-project.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chung38/line-bot-project/issues"
+  },
+  "homepage": "https://github.com/chung38/line-bot-project#readme"
 }
