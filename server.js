@@ -29,16 +29,17 @@ if (!DEEPSEEK_API_KEY) {
 }
 
 // 群組語言選擇儲存
-const groupLanguages = new Map(); // groupId -> Set of languages or "no-translate"
+const groupLanguages = new Map();
 
 // 翻譯結果快取
 const translationCache = new Map();
+setInterval(() => translationCache.clear(), 24 * 60 * 60 * 1000); // 每天清除快取
 
 // 已處理的 replyToken 集合
 const processedReplyTokens = new Set();
 
 // 支援的語言
-const supportedLanguages = ["en", "th", "vi", "id"]; // 英語、泰語、越語、印尼語
+const supportedLanguages = ["en", "th", "vi", "id"];
 
 // 語言名稱對應表
 const languageNames = {
@@ -197,7 +198,6 @@ app.get("/ping", (req, res) => {
 // 定時任務，保持伺服器活躍
 cron.schedule("*/5 * * * *", async () => {
   try {
-    // 替換為你的實際伺服器 URL，例如 Render 的 URL
     await axios.get("https://line-bot-project-a0bs.onrender.com/ping");
     console.log("Ping sent to keep server alive");
   } catch (error) {
@@ -248,16 +248,16 @@ app.post("/webhook", async (req, res) => {
               languages.clear();
               languages.add("no-translate");
             } else {
-              languages.delete("no-translate"); // 移除「不翻譯」選項
+              languages.delete("no-translate");
               languages.add(lang);
             }
-            await sendLanguageSelection(groupId); // 更新選單
+            await sendLanguageSelection(groupId);
           } else if (action === "confirm" && selectedGroupId === groupId) {
             await lineClient.pushMessage(groupId, {
               type: "text",
               text: "語言選擇已確認！隨時輸入「!選單」或「!設定」可重新顯示選單。",
             });
-            await saveGroupLanguages(); // 儲存語言選擇
+            await saveGroupLanguages();
           }
           return;
         }
@@ -266,6 +266,7 @@ app.post("/webhook", async (req, res) => {
         if (event.type === "message" && event.message.type === "text") {
           const userMessage = event.message.text;
           const replyToken = event.replyToken;
+          const startTime = Date.now();
 
           // 檢查是否為重新顯示選單的指令
           if (userMessage === "!選單" || userMessage === "!設定") {
@@ -292,7 +293,6 @@ app.post("/webhook", async (req, res) => {
           let replyText = "";
 
           if (detectedLang === "zh-TW" || detectedLang === "zh") {
-            // 如果是中文，根據選擇的語言翻譯
             if (!selectedLanguages.has("no-translate")) {
               const translations = await Promise.all(
                 Array.from(selectedLanguages).map(async (lang) => {
@@ -303,18 +303,13 @@ app.post("/webhook", async (req, res) => {
               replyText = translations.join("\n");
             }
           } else if (supportedLanguages.includes(detectedLang)) {
-            // 如果是英語、泰語、越語、印尼語，翻譯成繁體中文
             const translatedText = await translateWithDeepSeek(userMessage, "繁體中文");
             replyText = `【繁體中文】${translatedText}`;
           }
 
-          // 發送回覆
           if (replyText) {
-            console.log("Sending reply:", replyText);
-            await lineClient.replyMessage(replyToken, {
-              type: "text",
-              text: replyText.trim(),
-            });
+            console.log(`Response time: ${Date.now() - startTime}ms`);
+            await lineClient.replyMessage(replyToken, { type: "text", text: replyText.trim() });
           }
         }
       })
@@ -337,70 +332,4 @@ async function detectLanguageWithDeepSeek(text) {
         messages: [
           {
             role: "system",
-            content: "請識別以下文字的語言，並回覆 ISO 639-1 代碼（例如 en, zh, th, vi, id）。",
-          },
-          { role: "user", content: text },
-        ],
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-    return response.data.choices[0].message.content.trim();
-  } catch (error) {
-    console.error("語言偵測錯誤:", error.message);
-    return null;
-  }
-}
-
-// 使用 DeepSeek API 進行翻譯
-async function translateWithDeepSeek(text, targetLang) {
-  const cacheKey = `${text}-${targetLang}`;
-  if (translationCache.has(cacheKey)) {
-    console.log(`Cache hit for ${cacheKey}`);
-    return translationCache.get(cacheKey);
-  }
-
-  const apiUrl = "https://api.deepseek.com/v1/chat/completions";
-  try {
-    const response = await axios.post(
-      apiUrl,
-      {
-        model: "deepseek-chat",
-        messages: [
-          {
-            role: "system",
-            content: `你是一個專業的翻譯員，請將以下內容翻譯成 ${targetLang}：`,
-          },
-          { role: "user", content: text },
-        ],
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    const result = response.data.choices[0].message.content.trim();
-    translationCache.set(cacheKey, result);
-    console.log(`Cached translation for ${cacheKey}: ${result}`);
-    return result;
-  } catch (error) {
-    console.error("翻譯錯誤:", error.message);
-    return "翻譯失敗，請稍後再試";
-  }
-}
-
-// 啟動伺服器
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`🚀 伺服器正在運行，埠號：${port}`);
-  if (groupLanguages.size === 0) {
-    console.log("Warning: No group languages loaded. Check storage file or set languages manually.");
-  }
-});
+            content: "請識別以下文字的語言，並
