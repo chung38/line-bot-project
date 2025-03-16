@@ -206,6 +206,13 @@ cron.schedule("*/5 * * * *", async () => {
   }
 });
 
+// 按句子分割訊息
+function splitSentences(text) {
+  // 使用正則表達式按句號、驚嘆號、問號分割，並保留分隔符
+  const sentences = text.split(/(?<=[。！？])/).filter(sentence => sentence.trim().length > 0);
+  return sentences.map(sentence => sentence.trim());
+}
+
 // Webhook 處理
 app.post("/webhook", async (req, res) => {
   const events = req.body.events;
@@ -286,6 +293,9 @@ app.post("/webhook", async (req, res) => {
             return;
           }
 
+          // 按句子分割訊息
+          const sentences = splitSentences(userMessage);
+
           // 偵測訊息語言
           const detectStart = Date.now();
           const detectedLang = await detectLanguageWithDeepSeek(userMessage);
@@ -296,20 +306,34 @@ app.post("/webhook", async (req, res) => {
           if (detectedLang === "zh-TW" || detectedLang === "zh") {
             if (!selectedLanguages.has("no-translate")) {
               const translationStart = Date.now();
-              const translations = await Promise.all(
-                Array.from(selectedLanguages).map(async (lang) => {
-                  const translatedText = await translateWithDeepSeek(userMessage, languageNames[lang]);
-                  return `【${languageNames[lang]}】${translatedText}`;
-                })
-              );
+              const translations = [];
+              for (const sentence of sentences) {
+                // 添加原始句子
+                translations.push(sentence);
+                // 為每個句子翻譯成選擇的語言
+                const sentenceTranslations = await Promise.all(
+                  Array.from(selectedLanguages).map(async (lang) => {
+                    const translatedText = await translateWithDeepSeek(sentence, languageNames[lang]);
+                    return `【${languageNames[lang]}】${translatedText}`;
+                  })
+                );
+                translations.push(...sentenceTranslations);
+              }
               console.log(`Translations took ${Date.now() - translationStart}ms`);
               replyText = translations.join("\n");
             }
           } else if (supportedLanguages.includes(detectedLang)) {
             const translationStart = Date.now();
-            const translatedText = await translateWithDeepSeek(userMessage, "繁體中文");
+            const translations = [];
+            for (const sentence of sentences) {
+              // 添加原始句子
+              translations.push(sentence);
+              // 翻譯成繁體中文
+              const translatedText = await translateWithDeepSeek(sentence, "繁體中文");
+              translations.push(translatedText); // 不顯示【繁體中文】標籤
+            }
             console.log(`Translation to zh-TW took ${Date.now() - translationStart}ms`);
-            replyText = translatedText; // 不顯示【繁體中文】標籤
+            replyText = translations.join("\n");
           }
 
           if (replyText) {
