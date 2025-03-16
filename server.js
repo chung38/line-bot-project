@@ -4,32 +4,30 @@ const axios = require("axios");
 const { Client } = require("@line/bot-sdk");
 const cron = require("node-cron");
 const fs = require("fs").promises;
-const { LRUCache } = require("lru-cache"); // 修正導入方式
+const LRUCache = require("lru-cache");
 
 const app = express();
 app.use(express.json());
 
-// 環境變數檢查
-const requiredEnvs = ["LINE_ACCESS_TOKEN", "LINE_SECRET", "DEEPSEEK_API_KEY"];
+const requiredEnvs = ['LINE_ACCESS_TOKEN', 'LINE_SECRET', 'DEEPSEEK_API_KEY'];
 requiredEnvs.forEach(env => {
   if (!process.env[env]) throw new Error(`Missing ${env} in environment`);
 });
 
-// LINE 配置
 const lineConfig = {
   channelAccessToken: process.env.LINE_ACCESS_TOKEN,
   channelSecret: process.env.LINE_SECRET
 };
 const lineClient = new Client(lineConfig);
 
-// 快取設定
 const translationCache = new LRUCache({ max: 1000, ttl: 24 * 60 * 60 * 1000 });
 const languageDetectionCache = new LRUCache({ max: 500, ttl: 6 * 60 * 60 * 1000 });
 
-// 群組語言儲存
 const groupLanguages = new Map();
 const STORAGE_FILE = "groupLanguages.json";
 const fileLock = new Map();
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function safeSave(groupId) {
   if (fileLock.has(groupId)) return;
@@ -56,11 +54,9 @@ async function loadGroupLanguages() {
   }
 }
 
-// 支援語言
 const supportedLanguages = ["en", "th", "vi", "id"];
 const languageNames = { en: "英語", th: "泰語", vi: "越語", id: "印尼語", "zh-TW": "繁體中文" };
 
-// 翻譯函式（增加重試機制）
 async function translateWithDeepSeek(text, targetLang, retryCount = 0) {
   const cacheKey = `${text}-${targetLang}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
@@ -82,8 +78,9 @@ async function translateWithDeepSeek(text, targetLang, retryCount = 0) {
     return result;
   } catch (error) {
     if (error.response?.status === 429 && retryCount < 3) {
-      console.warn(`429 Too Many Requests，等待 ${2 ** retryCount} 秒後重試...`);
-      await new Promise(resolve => setTimeout(resolve, 2 ** retryCount * 1000));
+      const waitTime = (retryCount + 1) * 5000;
+      console.warn(`⚠️ 429 Too Many Requests，等待 ${waitTime / 1000} 秒後重試...`);
+      await delay(waitTime);
       return translateWithDeepSeek(text, targetLang, retryCount + 1);
     }
     console.error("翻譯錯誤:", error.response?.data || error.message);
@@ -91,8 +88,9 @@ async function translateWithDeepSeek(text, targetLang, retryCount = 0) {
   }
 }
 
-// 傳送語言選單（新增錯誤處理）
 async function sendLanguageMenu(groupId) {
+  await delay(2000); // 避免 429 錯誤
+
   try {
     const selected = groupLanguages.get(groupId) || new Set();
     const buttons = supportedLanguages.map(lang => ({
@@ -127,11 +125,14 @@ async function sendLanguageMenu(groupId) {
       }
     });
   } catch (error) {
-    console.error("發送語言選單失敗:", error.message);
+    if (error.response?.status === 429) {
+      console.warn("⚠️ API 超過速率限制，稍後再試...");
+    } else {
+      console.error("發送語言選單失敗:", error.message);
+    }
   }
 }
 
-// Webhook 處理
 app.post("/webhook", (req, res) => {
   res.sendStatus(200);
   processEventsAsync(req.body.events).catch(console.error);
@@ -140,15 +141,21 @@ app.post("/webhook", (req, res) => {
 async function processEventsAsync(events) {
   for (const event of events) {
     try {
-      if (event.type === "postback") await handlePostback(event);
-      if (event.type === "message") await handleMessage(event);
+      if (event.type === "postback") {
+        await handlePostback(event);
+      } else if (event.type === "message") {
+        await handleMessage(event);
+      } else if (event.type === "join") {  // Bot 加入群組事件
+        console.log(`Bot joined group: ${event.source.groupId}`);
+        await delay(3000); // 等 3 秒，避免 429
+        await sendLanguageMenu(event.source.groupId);
+      }
     } catch (error) {
       console.error("事件處理錯誤:", error);
     }
   }
 }
 
-// 處理 Postback
 async function handlePostback(event) {
   const { action, lang, groupId } = Object.fromEntries(new URLSearchParams(event.postback.data));
   if (action === "select") {
@@ -160,30 +167,22 @@ async function handlePostback(event) {
   }
 }
 
-// 處理 Message
 async function handleMessage(event) {
   if (event.message.text === "!設定") return sendLanguageMenu(event.source.groupId);
   const groupId = event.source.groupId;
   const selectedLangs = groupLanguages.get(groupId) || new Set();
   if (!selectedLangs.size || selectedLangs.has("no-translate")) {
-    return lineClient.replyMessage(event.replyToken, { type: "text", text: "⚠️ 請先使用「!設定」選擇語言" });
+    return lineClient.replyMessage(event.replyToken, {
+      type: "text",
+      text: "⚠️ 請先使用「!設定」選擇語言"
+    });
   }
 }
 
-// Keep-alive
 app.get("/ping", (req, res) => res.send("🟢 運作中"));
 cron.schedule("*/5 * * * *", async () => {
-  try {
-    await axios.get(`https://line-bot-project-a0bs.onrender.com/ping`);
-    console.log("Keepalive ping sent");
-  } catch (error) {
-    console.error("Keepalive error:", error.message);
-  }
+  try { await axios.get(`https://line-bot-project-a0bs.onrender.com/ping`); console.log("Keepalive ping sent"); }
+  catch (error) { console.error("Keepalive error:", error.message); }
 });
 
-// 啟動伺服器
-(async () => {
-  await loadGroupLanguages();
-  const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log(`🚀 伺服器運行中，端口：${port}`));
-})();
+(async () => { await loadGroupLanguages(); const port = process.env.PORT || 3000; app.listen(port, () => console.log(`🚀 伺服器運行中，端口：${port}`)); })();
