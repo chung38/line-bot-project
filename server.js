@@ -29,6 +29,9 @@ const groupLanguages = new Map();
 const STORAGE_FILE = "groupLanguages.json";
 const fileLock = new Map();
 
+// 每個群組推送消息的時間記錄，用以做速率限制（例如：每 60 秒內只推送一次）
+const lastPushTime = new Map();
+
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function safeSave(groupId) {
@@ -102,9 +105,19 @@ async function translateWithDeepSeek(text, targetLang, retryCount = 0) {
   }
 }
 
-// 發送語言選單，若 429 則延長重試等待時間
+// 增加推播速率限制：每個群組每 60 秒只允許發送一次
 async function sendLanguageMenu(groupId, retryCount = 0) {
-  await delay(2000); // 先延遲 2 秒
+  const now = Date.now();
+  const minInterval = 60000; // 60 秒
+  const lastTime = lastPushTime.get(groupId) || 0;
+  if (now - lastTime < minInterval) {
+    console.warn(`群組 ${groupId} 在 ${minInterval/1000} 秒內已發送過消息，跳過推送`);
+    return;
+  }
+  lastPushTime.set(groupId, now);
+  
+  // 先延遲 2 秒再發送，降低瞬間請求
+  await delay(2000);
   try {
     const selected = groupLanguages.get(groupId) || new Set();
     const buttons = supportedLanguages.map(lang => ({
