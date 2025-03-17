@@ -92,7 +92,7 @@ async function translateWithDeepSeek(text, targetLang, retryCount = 0) {
     return result;
   } catch (error) {
     if (error.response?.status === 429 && retryCount < 3) {
-      const waitTime = (retryCount + 1) * 5000;
+      const waitTime = (retryCount + 1) * 10000; // 等待 10, 20, 30 秒
       console.warn(`⚠️ DeepSeek API 429錯誤，等待 ${waitTime / 1000} 秒後重試...`);
       await delay(waitTime);
       return translateWithDeepSeek(text, targetLang, retryCount + 1);
@@ -102,9 +102,9 @@ async function translateWithDeepSeek(text, targetLang, retryCount = 0) {
   }
 }
 
-// 增加重試等待時間：如果 429，等待 (retryCount+1)*5000 毫秒
+// 發送語言選單，若 429 則延長重試等待時間
 async function sendLanguageMenu(groupId, retryCount = 0) {
-  await delay(2000);
+  await delay(2000); // 先延遲 2 秒
   try {
     const selected = groupLanguages.get(groupId) || new Set();
     const buttons = supportedLanguages.map(lang => ({
@@ -123,7 +123,7 @@ async function sendLanguageMenu(groupId, retryCount = 0) {
     });
   } catch (error) {
     if (error.response?.status === 429 && retryCount < 3) {
-      const waitTime = (retryCount + 1) * 5000;
+      const waitTime = (retryCount + 1) * 10000; // 10, 20, 30 秒
       console.warn(`⚠️ LINE API 429錯誤，等待 ${waitTime / 1000} 秒後重試發送語言選單...`);
       await delay(waitTime);
       return sendLanguageMenu(groupId, retryCount + 1);
@@ -146,7 +146,7 @@ async function processEventsAsync(events) {
         await handleMessage(event);
       } else if (event.type === "join") {  // Bot 加入群組事件
         console.log(`Bot joined group: ${event.source.groupId}`);
-        await delay(5000); // 延長至 5 秒
+        await delay(10000); // 延長至 10 秒
         await sendLanguageMenu(event.source.groupId);
       }
     } catch (error) {
