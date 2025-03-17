@@ -102,9 +102,8 @@ async function translateWithDeepSeek(text, targetLang, retryCount = 0) {
   }
 }
 
-// 發送語言選單，加入重試機制避免 429 錯誤
+// 增加重試等待時間：如果 429，等待 (retryCount+1)*5000 毫秒
 async function sendLanguageMenu(groupId, retryCount = 0) {
-  // 先延遲 2 秒，降低連續請求的風險
   await delay(2000);
   try {
     const selected = groupLanguages.get(groupId) || new Set();
@@ -124,7 +123,7 @@ async function sendLanguageMenu(groupId, retryCount = 0) {
     });
   } catch (error) {
     if (error.response?.status === 429 && retryCount < 3) {
-      const waitTime = (retryCount + 1) * 3000;
+      const waitTime = (retryCount + 1) * 5000;
       console.warn(`⚠️ LINE API 429錯誤，等待 ${waitTime / 1000} 秒後重試發送語言選單...`);
       await delay(waitTime);
       return sendLanguageMenu(groupId, retryCount + 1);
@@ -147,7 +146,7 @@ async function processEventsAsync(events) {
         await handleMessage(event);
       } else if (event.type === "join") {  // Bot 加入群組事件
         console.log(`Bot joined group: ${event.source.groupId}`);
-        await delay(3000); // 等 3 秒再發送，避免 429
+        await delay(5000); // 延長至 5 秒
         await sendLanguageMenu(event.source.groupId);
       }
     } catch (error) {
