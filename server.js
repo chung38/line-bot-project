@@ -1,10 +1,12 @@
-require("dotenv").config();
-const express = require("express");
-const axios = require("axios");
-const { Client } = require("@line/bot-sdk");
-const cron = require("node-cron");
-const fs = require("fs").promises;
-const LRUCache = require("lru-cache");
+import dotenv from "dotenv";
+import express from "express";
+import axios from "axios";
+import { Client } from "@line/bot-sdk";
+import cron from "node-cron";
+import { promises as fs } from "fs";
+import { LRUCache } from "lru-cache";
+
+dotenv.config();
 
 const app = express();
 app.use(express.json());
@@ -20,6 +22,7 @@ const lineConfig = {
 };
 const lineClient = new Client(lineConfig);
 
+// 使用 LRUCache 建立快取
 const translationCache = new LRUCache({ max: 1000, ttl: 24 * 60 * 60 * 1000 });
 const languageDetectionCache = new LRUCache({ max: 500, ttl: 6 * 60 * 60 * 1000 });
 
@@ -181,8 +184,16 @@ async function handleMessage(event) {
 
 app.get("/ping", (req, res) => res.send("🟢 運作中"));
 cron.schedule("*/5 * * * *", async () => {
-  try { await axios.get(`https://line-bot-project-a0bs.onrender.com/ping`); console.log("Keepalive ping sent"); }
-  catch (error) { console.error("Keepalive error:", error.message); }
+  try {
+    await axios.get(`https://line-bot-project-a0bs.onrender.com/ping`);
+    console.log("Keepalive ping sent");
+  } catch (error) {
+    console.error("Keepalive error:", error.message);
+  }
 });
 
-(async () => { await loadGroupLanguages(); const port = process.env.PORT || 3000; app.listen(port, () => console.log(`🚀 伺服器運行中，端口：${port}`)); })();
+(async () => {
+  await loadGroupLanguages();
+  const port = process.env.PORT || 3000;
+  app.listen(port, () => console.log(`🚀 伺服器運行中，端口：${port}`));
+})();
