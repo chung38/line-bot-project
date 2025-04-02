@@ -194,6 +194,6 @@ cron.schedule("*/5 * * * *", async () => {
 
 (async () => {
   await loadGroupLanguages();
-  const port = process.env.PORT || 3000;
+  const port = process.env.PORT || 10000;
   app.listen(port, () => console.log(`🚀 伺服器運行中，端口：${port}`));
 })();
