@@ -23,58 +23,42 @@ const config = {
 
 const client = new Client(config);
 
-// 使用 raw body parser 僅針對 /webhook 與 /join 路由，保留原始請求內容
+// 這裡不設定全域的 express.json()，只針對 /webhook 使用 raw body parser
 app.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
   middleware(config),
   async (req, res) => {
     try {
-      let events;
+      let parsedBody;
       if (Buffer.isBuffer(req.body)) {
-        events = JSON.parse(req.body.toString());
+        parsedBody = JSON.parse(req.body.toString());
       } else if (typeof req.body === "string") {
-        events = JSON.parse(req.body);
+        parsedBody = JSON.parse(req.body);
       } else {
-        // 如果 req.body 已經是物件，則直接使用
-        events = req.body;
+        parsedBody = req.body;
       }
-      console.log("Received events:", events);
-      // 處理事件（根據需求擴充處理邏輯）
+      
+      console.log("Received events:", parsedBody);
+      
+      // 處理所有收到的事件
+      for (const event of parsedBody.events || []) {
+        if (event.type === "join" && event.source.type === "group") {
+          // 處理加入群組事件：延遲 10 秒後發送語言選單
+          const groupId = event.source.groupId;
+          console.log("Bot joined group:", groupId);
+          setTimeout(() => {
+            sendLanguageMenu(groupId);
+          }, 10000);
+        } else {
+          // 根據需要處理其他事件（例如 message, postback 等）
+          console.log("其他事件處理，類型：", event.type);
+        }
+      }
+      
       res.sendStatus(200);
     } catch (error) {
       console.error("Webhook 處理錯誤:", error);
-      res.sendStatus(500);
-    }
-  }
-);
-
-// 同理處理 /join 路由
-app.post(
-  "/join",
-  bodyParser.raw({ type: "application/json" }),
-  middleware(config),
-  async (req, res) => {
-    try {
-      let events;
-      if (Buffer.isBuffer(req.body)) {
-        events = JSON.parse(req.body.toString());
-      } else if (typeof req.body === "string") {
-        events = JSON.parse(req.body);
-      } else {
-        events = req.body;
-      }
-      for (const event of events) {
-        if (event.type === "join" && event.source.type === "group") {
-          const groupId = event.source.groupId;
-          console.log("Bot joined group:", groupId);
-          await new Promise((resolve) => setTimeout(resolve, 10000)); // 延遲10秒再發送
-          await sendLanguageMenu(groupId);
-        }
-      }
-      res.sendStatus(200);
-    } catch (error) {
-      console.error("Join 事件處理錯誤:", error);
       res.sendStatus(500);
     }
   }
@@ -93,7 +77,11 @@ const canSendMessage = (groupId) => {
 };
 
 const sendLanguageMenu = async (groupId, retryCount = 0) => {
-  if (!canSendMessage(groupId)) return;
+  if (!canSendMessage(groupId)) {
+    console.log(`群組 ${groupId} 在 ${RATE_LIMIT_TIME / 1000} 秒內已發送過消息，跳過推送`);
+    return;
+  }
+  
   const message = {
     type: "flex",
     altText: "翻譯設定",
