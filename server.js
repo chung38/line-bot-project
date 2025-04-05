@@ -6,23 +6,20 @@ import bodyParser from "body-parser";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ================= 强化环境验证 =================
-const validateEnv = () => {
-  const requiredEnvVars = [
-    'LINE_CHANNEL_ACCESS_TOKEN',
-    'LINE_CHANNEL_SECRET'
-  ];
-
-  const missingVars = requiredEnvVars.filter(v => !process.env[v]);
-  if (missingVars.length > 0) {
-    console.error("❌ 缺少必要环境变量:");
-    missingVars.forEach(v => console.error(`   - ${v}`));
+// ================= 強化配置驗證 =================
+const validateConfig = () => {
+  const requiredEnv = ['LINE_CHANNEL_ACCESS_TOKEN', 'LINE_CHANNEL_SECRET'];
+  const missing = requiredEnv.filter(v => !process.env[v]);
+  
+  if (missing.length) {
+    console.error("❌ 缺少關鍵環境變數:");
+    missing.forEach(v => console.error(`   - ${v}`));
     process.exit(1);
   }
 };
-validateEnv();
+validateConfig();
 
-// ================= LINE客户端配置 =================
+// ================= LINE 客戶端配置 =================
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET
@@ -30,60 +27,120 @@ const lineConfig = {
 
 const client = new Client(lineConfig);
 
-// ================= 关键中间件配置 =================
+// ================= 優化後的中間件鏈 =================
+// 為了讓 LINE middleware 能正確驗證簽名，請使用 raw body parser 保留原始資料，
+// 驗證完成後再轉換為 JSON 供後續邏輯使用。
 app.post(
   "/webhook",
-  // 中间件顺序非常重要！
-  bodyParser.raw({ type: "application/json" }), // 第1步：获取原始请求体
-  middleware(lineConfig),                       // 第2步：LINE签名验证
+  bodyParser.raw({ type: "application/json" }), // 保留原始資料供簽名驗證
+  middleware(lineConfig),                        // LINE 官方驗證
+  express.json(),                                // 轉換 JSON
   async (req, res) => {
     try {
-      // 第3步：安全解析请求体
-      let rawBody;
-      if (Buffer.isBuffer(req.body)) {
-        rawBody = req.body.toString("utf8");
-      } else {
-        throw new Error("无效的请求体格式");
-      }
-
-      console.log("📥 原始请求体:", rawBody); // 调试日志
-
-      const body = JSON.parse(rawBody);
-      console.log("📦 解析后事件数据:", body);
-
-      await Promise.all(body.events.map(async (event) => {
-        if (event.type === "join" && event.source.type === "group") {
+      console.log("🔍 解析後的事件結構:", JSON.stringify(req.body, null, 2));
+      
+      // 處理所有收到的事件
+      await Promise.all(req.body.events.map(async (event) => {
+        if (event.type === "join" && event.source?.type === "group") {
           const groupId = event.source.groupId;
-          console.log(`🤖 新群组加入: ${groupId}`);
-          await sendLanguageMenu(groupId);
+          console.log(`🤖 新群組加入: ${groupId}`);
+          // 延遲 10 秒後發送語言選單
+          setTimeout(() => {
+            sendLanguageMenu(groupId);
+          }, 10000);
+        } else {
+          // 其他事件（例如 message、postback）可在此處擴充處理邏輯
+          console.log(`📩 收到其他事件，類型：${event.type}`);
         }
       }));
-
-      res.status(200).end();
+      
+      res.status(200).json({ status: "success" });
     } catch (error) {
-      console.error("⚠️ 请求处理失败:", error);
+      console.error("⚠️ 處理流程異常:", error);
       res.status(500).json({
         status: "error",
-        message: error.message,
-        errorType: error.constructor.name
+        code: error.code || "INTERNAL_ERROR",
+        message: error.message
       });
     }
   }
 );
 
-// ================= 菜单发送功能（保持不变） =================
-const sendLanguageMenu = async (groupId) => {
-  // ... 保持原有实现不变 ...
+// ================= 選單發送功能 =================
+const sendLanguageMenu = async (groupId, retryCount = 0) => {
+  // 為避免短時間內重複發送，可加入簡單的速率限制（例如：60秒內只發送一次）
+  if (!canSendMessage(groupId)) {
+    console.log(`群組 ${groupId} 在 60 秒內已發送過選單，跳過推送`);
+    return;
+  }
+  
+  const message = {
+    type: "flex",
+    altText: "語言設定選單",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "🌍 請選擇翻譯語言", weight: "bold" },
+          { type: "separator", margin: "md" },
+          createButton("英文", "en"),
+          createButton("泰文", "th"),
+          createButton("越南文", "vi"),
+          createButton("印尼文", "id")
+        ]
+      }
+    }
+  };
+
+  try {
+    console.log(`📤 正在發送選單至群組 ${groupId}...`);
+    await client.pushMessage(groupId, message);
+    console.log("✅ 選單發送成功");
+  } catch (error) {
+    if (error.statusCode === 429 && retryCount < 3) {
+      const waitTime = (retryCount + 1) * 5000; // 依次等待 5, 10, 15 秒
+      console.warn(`⚠️ LINE API 429 錯誤，等待 ${waitTime / 1000} 秒後重試發送選單...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      return sendLanguageMenu(groupId, retryCount + 1);
+    }
+    console.error(`❌ 發送失敗 (${groupId}):`, error.response?.data || error.message);
+  }
 };
 
-// ================= 服务器启动 =================
+// 速率限制工具：每個群組 60 秒內只允許發送一次選單
+const rateLimit = {};
+const RATE_LIMIT_TIME = 60000;
+const canSendMessage = (groupId) => {
+  const now = Date.now();
+  if (!rateLimit[groupId] || now - rateLimit[groupId] > RATE_LIMIT_TIME) {
+    rateLimit[groupId] = now;
+    return true;
+  }
+  return false;
+};
+
+// ================= 工具函數 =================
+const createButton = (label, code) => ({
+  type: "button",
+  action: {
+    type: "postback",
+    label: `${label} (${code.toUpperCase()})`,
+    data: `action=set_lang&code=${code}`
+  },
+  style: "primary",
+  color: "#34B7F1"
+});
+
+// ================= 伺服器啟動 =================
 app.listen(PORT, () => {
-  console.log(`🚀 服务运行中：http://localhost:${PORT}`);
-  console.log("🔒 安全配置状态：");
+  console.log(`🚀 服務已啟動，端口：${PORT}`);
+  console.log("🛡️ 安全配置狀態：");
   console.table({
-    '请求体处理': '原始模式',
-    '签名验证': '已启用 ✅',
-    'HTTPS支持': process.env.NODE_ENV === 'production' ? '由Render托管' : '本地开发',
-    '运行环境': process.env.NODE_ENV || 'development'
+    '請求體處理': 'LINE中間件 → Express.json()',
+    '簽名驗證': '已啟用 ✅',
+    'HTTPS支持': process.env.NODE_ENV === 'production' ? 'Render托管' : '開發模式',
+    '環境模式': process.env.NODE_ENV || 'development'
   });
 });
