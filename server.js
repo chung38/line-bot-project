@@ -4,7 +4,6 @@ import { Client, middleware } from "@line/bot-sdk";
 import bodyParser from "body-parser";
 import axios from "axios";
 import fs from "fs/promises";
-import LRUCache from "lru-cache";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -28,15 +27,16 @@ const lineConfig = {
 };
 const client = new Client(lineConfig);
 
-// ================= 檔案存取：群組語言設定 =================
+// ================= 群組語言設定儲存 =================
 const GROUP_LANG_FILE = "groupLanguages.json";
-let groupLanguages = new Map(); // key: 群組 ID, value: 語言代碼 (例如 "en", "th", "vi", "id")
+// 儲存每個群組所選語言，格式： { groupId: ["en", "th", ...] }
+let groupLanguages = new Map();
 
 const loadGroupLanguages = async () => {
   try {
     const data = await fs.readFile(GROUP_LANG_FILE, "utf8");
     const obj = JSON.parse(data);
-    groupLanguages = new Map(Object.entries(obj));
+    groupLanguages = new Map(Object.entries(obj).map(([groupId, langs]) => [groupId, new Set(langs)]));
     console.log("✅ 成功載入群組語言設定");
   } catch (error) {
     if (error.code === "ENOENT") {
@@ -49,7 +49,10 @@ const loadGroupLanguages = async () => {
 
 const saveGroupLanguages = async () => {
   try {
-    const obj = Object.fromEntries(groupLanguages);
+    const obj = {};
+    for (const [groupId, langSet] of groupLanguages.entries()) {
+      obj[groupId] = Array.from(langSet);
+    }
     await fs.writeFile(GROUP_LANG_FILE, JSON.stringify(obj, null, 2));
     console.log("✅ 群組語言設定已儲存");
   } catch (error) {
@@ -69,12 +72,9 @@ const translateWithDeepSeek = async (text, targetLang, retryCount = 0) => {
           { role: "user", content: text }
         ]
       },
-      {
-        headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` },
-      }
+      { headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` } }
     );
-    const result = response.data.choices[0].message.content.trim();
-    return result;
+    return response.data.choices[0].message.content.trim();
   } catch (error) {
     if (error.response?.status === 429 && retryCount < 3) {
       const waitTime = (retryCount + 1) * 5000;
@@ -87,11 +87,11 @@ const translateWithDeepSeek = async (text, targetLang, retryCount = 0) => {
   }
 };
 
-// ================= 判斷文字語言工具 =================
+// ================= 判斷是否含中文 =================
 const containsChinese = (text) => /[\u4e00-\u9fff]/.test(text);
 
 // ================= 中間件設定 =================
-// 為了讓 LINE middleware 正確驗證簽名，使用 raw body parser 保留原始資料，再轉換為 JSON 供後續處理
+// 使用 raw body parser 保留原始資料供 LINE middleware 驗證簽名，後轉換為 JSON
 app.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
@@ -101,31 +101,50 @@ app.post(
     try {
       console.log("🔍 解析後的事件結構:", JSON.stringify(req.body, null, 2));
       await Promise.all(req.body.events.map(async (event) => {
-        // 處理機器人加入群組事件
+        // 處理機器人加入群組事件：直接發送選單
         if (event.type === "join" && event.source?.type === "group") {
           const groupId = event.source.groupId;
           console.log(`🤖 新群組加入: ${groupId}`);
-          // 直接發送語言選單（無延遲）
           sendLanguageMenu(groupId);
         }
-        // 處理 postback 事件：設定語言
+        // 處理 postback 事件：設定或取消語言選擇
         else if (event.type === "postback") {
           const data = event.postback.data;
           const params = new URLSearchParams(data);
           const action = params.get("action");
-          const code = params.get("code");
+          const code = params.get("code"); // 語言代碼，或特殊指令例如 "cancel"
+          const groupId = event.source.groupId;
           if (action === "set_lang" && code) {
-            const langNameMapping = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
-            const langName = langNameMapping[code] || code;
-            const groupId = event.source.groupId;
-            // 儲存群組語言設定（永久記憶）
-            groupLanguages.set(groupId, code);
-            await saveGroupLanguages();
-            console.log(`✅ 群組 ${groupId} 已設定語言：${langName} (${code.toUpperCase()})`);
-            await client.replyMessage(event.replyToken, {
-              type: "text",
-              text: `您已選擇：${langName}`
-            });
+            // 若 code 為 "cancel"，則清除該群組所有語言選擇
+            if (code === "cancel") {
+              groupLanguages.delete(groupId);
+              await saveGroupLanguages();
+              console.log(`✅ 群組 ${groupId} 已清除所有語言選擇`);
+              await client.replyMessage(event.replyToken, {
+                type: "text",
+                text: "已取消所有語言選擇。"
+              });
+            } else {
+              // 多選：若已選則移除，未選則加入
+              let langSet = groupLanguages.get(groupId);
+              if (!langSet) {
+                langSet = new Set();
+                groupLanguages.set(groupId, langSet);
+              }
+              if (langSet.has(code)) {
+                langSet.delete(code);
+              } else {
+                langSet.add(code);
+              }
+              await saveGroupLanguages();
+              const langNameMapping = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
+              const current = Array.from(langSet).map(c => langNameMapping[c] || c).join("、") || "無";
+              console.log(`✅ 群組 ${groupId} 更新語言選擇：${current}`);
+              await client.replyMessage(event.replyToken, {
+                type: "text",
+                text: `目前選擇：${current}`
+              });
+            }
           } else {
             console.log("收到未知 postback:", data);
           }
@@ -134,27 +153,31 @@ app.post(
         else if (event.type === "message" && event.message.type === "text") {
           const groupId = event.source.groupId;
           const text = event.message.text;
-          const targetLang = groupLanguages.get(groupId);
-          if (!targetLang) {
+          const langSet = groupLanguages.get(groupId);
+          if (!langSet || langSet.size === 0) {
             await client.replyMessage(event.replyToken, {
               type: "text",
-              text: "請先設定翻譯語言，您可以點選選單或輸入 !設定"
+              text: "請先設定翻譯語言，您可以點選選單或輸入 !設定。"
             });
             return;
           }
+          // 當訊息包含中文時，翻譯成所有所選語言
           if (containsChinese(text)) {
-            // 中文翻譯成群組設定的語言
-            const translated = await translateWithDeepSeek(text, targetLang);
+            const results = [];
+            for (const code of langSet) {
+              const translated = await translateWithDeepSeek(text, code);
+              results.push(`${code.toUpperCase()}: ${translated}`);
+            }
             await client.replyMessage(event.replyToken, {
               type: "text",
-              text: `翻譯結果 (${targetLang.toUpperCase()}): ${translated}`
+              text: results.join("\n")
             });
           } else {
             // 非中文則翻譯成繁體中文
             const translated = await translateWithDeepSeek(text, "zh-TW");
             await client.replyMessage(event.replyToken, {
               type: "text",
-              text: `翻譯結果 (繁中): ${translated}`
+              text: translated
             });
           }
         } else {
@@ -174,9 +197,9 @@ app.post(
 );
 
 // ================= 選單發送功能 =================
+// 速率限制：每個群組 60 秒內只發送一次選單
 const rateLimit = {};
-const RATE_LIMIT_TIME = 60000; // 每個群組 60 秒內只發送一次
-
+const RATE_LIMIT_TIME = 60000;
 const canSendMessage = (groupId) => {
   const now = Date.now();
   if (!rateLimit[groupId] || now - rateLimit[groupId] > RATE_LIMIT_TIME) {
@@ -206,7 +229,13 @@ const sendLanguageMenu = async (groupId, retryCount = 0) => {
           createButton("英文", "en"),
           createButton("泰文", "th"),
           createButton("越南文", "vi"),
-          createButton("印尼文", "id")
+          createButton("印尼文", "id"),
+          { // 額外提供「取消選擇」按鈕
+            type: "button",
+            action: { type: "postback", label: "取消選擇", data: "action=set_lang&code=cancel" },
+            style: "secondary",
+            color: "#FF3B30"
+          }
         ]
       }
     }
