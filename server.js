@@ -95,13 +95,10 @@ app.post(
       console.log('🔍 解析後的事件結構:', JSON.stringify(req.body, null, 2));
       await Promise.all(req.body.events.map(async event => {
         const groupId = event.source?.groupId;
-        // join 事件
         if (event.type === 'join' && event.source.type === 'group') {
           console.log(`🤖 新群組加入: ${groupId}`);
           sendLanguageMenu(groupId);
-        }
-        // postback 事件
-        else if (event.type === 'postback') {
+        } else if (event.type === 'postback') {
           const params = new URLSearchParams(event.postback.data);
           const action = params.get('action');
           const code = params.get('code');
@@ -120,9 +117,7 @@ app.post(
               await client.replyMessage(event.replyToken, { type: 'text', text: cur });
             }
           }
-        }
-        // message 事件
-        else if (event.type === 'message' && event.message.type === 'text' && groupId) {
+        } else if (event.type === 'message' && event.message.type === 'text' && groupId) {
           const text = event.message.text;
           const set = groupLanguages.get(groupId);
           if (!set || set.size === 0) {
@@ -168,7 +163,7 @@ const sendLanguageMenu = async (gid, retry=0) => {
   try { await client.pushMessage(gid,msg); console.log(`📤 選單已發送至 ${gid}`); }
   catch(err){ if(err.statusCode===429 && retry<3){ await new Promise(r=>setTimeout(r,(retry+1)*5000)); return sendLanguageMenu(gid,retry+1);} console.error(err.message);}  
 };
-const createButton = (l,c)=>({ type:'button', action:{type:'postback',label:`${l} (${c.toUpperCase()})`,data:`action=set_lang&code=${c}`}, style:'primary', color:'#34B7F1'});
+const createButton=(l,c)=>({ type:'button', action:{type:'postback',label:`${l} (${c.toUpperCase()})`,data:`action=set_lang&code=${c}`}, style:'primary', color:'#34B7F1'});
 
 // ================= 定時自我 PING 防休眠 =================
 const PING_URL = process.env.PING_URL;
