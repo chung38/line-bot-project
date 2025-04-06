@@ -9,261 +9,163 @@ import https from "node:https";
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ================= 強化配置驗證 =================
-const validateConfig = () => {
-  const requiredEnv = [
-    'LINE_CHANNEL_ACCESS_TOKEN',
-    'LINE_CHANNEL_SECRET',
-    'DEEPSEEK_API_KEY',
-    'PING_URL'
-  ];
-  const missing = requiredEnv.filter(v => !process.env[v]);
-  if (missing.length) {
-    console.error("❌ 缺少關鍵環境變數:");
-    missing.forEach(v => console.error(`   - ${v}`));
-    process.exit(1);
-  }
-};
-validateConfig();
+// 驗證環境變數
+["LINE_CHANNEL_ACCESS_TOKEN","LINE_CHANNEL_SECRET","DEEPSEEK_API_KEY","PING_URL"]
+  .forEach(v=>{ if(!process.env[v]){ console.error(`缺少環境變數 ${v}`); process.exit(1);} });
 
-// ================= LINE 客戶端配置 =================
+// LINE 客戶端
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET
 };
 const client = new Client(lineConfig);
 
-// ================= 群組語言設定儲存 =================
-const GROUP_LANG_FILE = "groupLanguages.json";
-let groupLanguages = new Map();
-
-const loadGroupLanguages = async () => {
+// 讀寫群組語言設定
+const LANG_FILE = "./groupLanguages.json";
+let groupLang = new Map();
+const loadLang = async ()=>{
   try {
-    const data = await fs.readFile(GROUP_LANG_FILE, "utf8");
-    const obj = JSON.parse(data);
-    groupLanguages = new Map(
-      Object.entries(obj).map(([g, langs]) => [g, new Set(langs)])
-    );
-    console.log("✅ 成功載入群組語言設定");
-  } catch (e) {
-    if (e.code !== "ENOENT") console.error("載入群組語言設定失敗:", e);
-  }
+    const d = await fs.readFile(LANG_FILE,"utf8");
+    Object.entries(JSON.parse(d)).forEach(([g,arr])=>groupLang.set(g,new Set(arr)));
+  } catch{}
 };
-
-const saveGroupLanguages = async () => {
+const saveLang = async ()=>{
   const obj = {};
-  for (const [g, set] of groupLanguages.entries()) {
-    obj[g] = Array.from(set);
-  }
-  try {
-    await fs.writeFile(GROUP_LANG_FILE, JSON.stringify(obj, null, 2));
-    console.log("✅ 群組語言設定已儲存");
-  } catch (e) {
-    console.error("儲存群組語言設定失敗:", e);
-  }
+  groupLang.forEach((set,g)=> obj[g]=[...set]);
+  await fs.writeFile(LANG_FILE,JSON.stringify(obj,null,2));
 };
 
-// ================= 翻譯 API 功能 =================
-const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
-  const systemPrompt = `你是一名翻譯員，請將以下句子翻譯成${
-    targetLang === "zh-TW"
-      ? "繁體中文"
-      : targetLang === "en"
-      ? "英文"
-      : targetLang === "th"
-      ? "泰文"
-      : targetLang === "vi"
-      ? "越南文"
-      : targetLang === "id"
-      ? "印尼文"
-      : targetLang
-  }，僅輸出翻譯結果，不要任何其他文字或解釋。`;
+// 判斷中文
+const isChinese = s=>/[\u4e00-\u9fff]/.test(s);
+
+// DeepSeek 翻譯
+const translateWithDeepSeek = async (text, targetLang, retry=0)=>{
+  const sys = `你是一名翻譯員，請將以下句子翻譯成${
+    targetLang==="zh-TW"?"繁體中文":
+    targetLang==="en"?"英文":
+    targetLang==="th"?"泰文":
+    targetLang==="vi"?"越南文":
+    targetLang==="id"?"印尼文":targetLang
+  }，僅回傳翻譯結果。`;
   try {
-    const res = await axios.post(
+    const r = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
-      {
-        model: "deepseek-chat",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: text }
-        ]
-      },
-      { headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` } }
+      { model:"deepseek-chat", messages:[{role:"system",content:sys},{role:"user",content:text}] },
+      { headers:{ Authorization:`Bearer ${process.env.DEEPSEEK_API_KEY}` } }
     );
-    return res.data.choices[0].message.content.trim();
-  } catch (err) {
-    if (err.response?.status === 429 && retry < 3) {
-      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
-      return translateWithDeepSeek(text, targetLang, retry + 1);
+    return r.data.choices[0].message.content.trim();
+  } catch(e){
+    if(e.response?.status===429 && retry<3){
+      await new Promise(r=>setTimeout(r,(retry+1)*5000));
+      return translateWithDeepSeek(text,targetLang,retry+1);
     }
-    console.error("翻譯錯誤:", err.response?.data || err.message);
+    console.error("翻譯錯誤:",e.message);
     return "（翻譯暫時不可用）";
   }
 };
 
-// ================= 判斷是否含中文 =================
-const containsChinese = s => /[\u4e00-\u9fff]/.test(s);
-
-// ================= 中間件設定 =================
+// Webhook
 app.post(
   "/webhook",
-  bodyParser.raw({ type: "application/json" }), // 保留原始資料供簽名驗證
-  middleware(lineConfig),                       // LINE 官方驗證
-  express.json(),                               // 轉 JSON
-  async (req, res) => {
-    try {
-      console.log("🔍 解析後的事件結構:", JSON.stringify(req.body, null, 2));
-      await Promise.all(req.body.events.map(async event => {
-        const groupId = event.source?.groupId;
-
-        // 機器人加入群組 → 發送選單
-        if (event.type === "join" && event.source.type === "group") {
-          console.log(`🤖 新群組加入: ${groupId}`);
-          sendLanguageMenu(groupId);
+  bodyParser.raw({type:"application/json"}),
+  middleware(lineConfig),
+  express.json(),
+  async (req,res)=>{
+    await Promise.all(req.body.events.map(async event=>{
+      const gid = event.source?.groupId;
+      // 1) 機器人一進群就自動跳選單
+      if(event.type==="join" && gid){
+        console.log(`🤖 新群組加入: ${gid}`);
+        return sendMenu(gid);
+      }
+      // 2) 後續要更改再用 !設定
+      if(event.type==="message" && event.message.type==="text" && event.message.text==="!設定" && gid){
+        return sendMenu(gid);
+      }
+      // 3) postback 設定/取消
+      if(event.type==="postback" && gid){
+        const p=new URLSearchParams(event.postback.data);
+        if(p.get("action")==="set_lang"){
+          const code=p.get("code");
+          let set=groupLang.get(gid)||new Set();
+          if(code==="cancel") set.clear();
+          else set.has(code)?set.delete(code):set.add(code);
+          if(set.size) groupLang.set(gid,set);
+          else groupLang.delete(gid);
+          await saveLang();
+          const names={en:"英文",th:"泰文",vi:"越南文",id:"印尼文"};
+          const cur=[...set].map(c=>names[c]).join("、")||"無";
+          return client.replyMessage(event.replyToken,{type:"text",text:cur});
         }
-
-        // 使用者點選按鈕 → 設定或取消語言
-        else if (event.type === "postback") {
-          const params = new URLSearchParams(event.postback.data);
-          const action = params.get("action");
-          const code = params.get("code");
-          if (action === "set_lang" && groupId) {
-            let set = groupLanguages.get(groupId) || new Set();
-            if (code === "cancel") {
-              set.clear();
-            } else {
-              set.has(code) ? set.delete(code) : set.add(code);
-            }
-            if (set.size) groupLanguages.set(groupId, set);
-            else groupLanguages.delete(groupId);
-            await saveGroupLanguages();
-            const names = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
-            const current = set.size
-              ? Array.from(set).map(c => names[c]).join("、")
-              : "無";
-            await client.replyMessage(event.replyToken, {
-              type: "text",
-              text: current
-            });
+      }
+      // 4) 訊息翻譯
+      if(event.type==="message" && event.message.type==="text" && gid){
+        const txt=event.message.text;
+        const set=groupLang.get(gid);
+        if(!set||!set.size) return; // 未設定，不回覆
+        if(isChinese(txt)){
+          // 中文→各選語言
+          for(const c of set){
+            const t=await translateWithDeepSeek(txt,c);
+            await client.replyMessage(event.replyToken,{type:"text",text:t});
           }
+        } else {
+          // 非中文→繁中
+          const t=await translateWithDeepSeek(txt,"zh-TW");
+          await client.replyMessage(event.replyToken,{type:"text",text:t});
         }
-
-        // 訊息事件 → 翻譯
-        else if (event.type === "message" && event.message.type === "text" && groupId) {
-          const text = event.message.text;
-          const set = groupLanguages.get(groupId);
-          if (!set || set.size === 0) {
-            await client.replyMessage(event.replyToken, {
-              type: "text",
-              text: "請先設定翻譯語言。"
-            });
-            return;
-          }
-          if (containsChinese(text)) {
-            // 中文 → 各選語言
-            const outs = [];
-            for (const c of set) {
-              outs.push(await translateWithDeepSeek(text, c));
-            }
-            await client.replyMessage(event.replyToken, {
-              type: "text",
-              text: outs.join("\n")
-            });
-          } else {
-            // 非中文 → 繁中
-            const t = await translateWithDeepSeek(text, "zh-TW");
-            await client.replyMessage(event.replyToken, {
-              type: "text",
-              text: t
-            });
-          }
-        }
-      }));
-      res.sendStatus(200);
-    } catch (e) {
-      console.error("⚠️ 處理流程異常:", e);
-      res.sendStatus(500);
-    }
+      }
+    }));
+    res.sendStatus(200);
   }
 );
 
-// ================= 選單發送功能 =================
-const rateLimit = {};
-const INTERVAL = 60000;
-const canSend = gid => {
-  const now = Date.now();
-  if (!rateLimit[gid] || now - rateLimit[gid] > INTERVAL) {
-    rateLimit[gid] = now;
-    return true;
-  }
+// 發選單
+const rateLimit={}, INTERVAL=60000;
+const canSend=g=>{
+  const now=Date.now();
+  if(!rateLimit[g]||now-rateLimit[g]>INTERVAL){rateLimit[g]=now;return true;}
   return false;
 };
-const sendLanguageMenu = async (gid, retry = 0) => {
-  if (!canSend(gid)) return;
-  const msg = {
-    type: "flex",
-    altText: "語言設定選單",
-    contents: {
-      type: "bubble",
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          { type: "text", text: "🌍 請選擇翻譯語言", weight: "bold" },
-          { type: "separator", margin: "md" },
-          createButton("英文", "en"),
-          createButton("泰文", "th"),
-          createButton("越南文", "vi"),
-          createButton("印尼文", "id"),
-          {
-            type: "button",
-            action: { type: "postback", label: "取消選擇", data: "action=set_lang&code=cancel" },
-            style: "secondary",
-            color: "#FF3B30"
-          }
-        ]
-      }
+const sendMenu=async(g,retry=0)=>{
+  if(!canSend(g)) return;
+  const btns=["en","th","vi","id"].map(c=>({
+    type:"button",
+    action:{type:"postback",label:c.toUpperCase(),data:`action=set_lang&code=${c}`},
+    style:"primary",color:"#34B7F1"
+  }));
+  btns.push({
+    type:"button",
+    action:{type:"postback",label:"取消選擇",data:"action=set_lang&code=cancel"},
+    style:"secondary",color:"#FF3B30"
+  });
+  const msg={type:"flex",altText:"語言選單",contents:{type:"bubble",body:{type:"box",layout:"vertical",contents:[
+    {type:"text",text:"🌍 請選擇翻譯語言",weight:"bold"},
+    {type:"separator",margin:"md"},
+    ...btns
+  ]}}};
+  try{await client.pushMessage(g,msg);}
+  catch(e){
+    if(e.statusCode===429&&retry<3){
+      await new Promise(r=>setTimeout(r,(retry+1)*5000));
+      return sendMenu(g,retry+1);
     }
-  };
-  try {
-    await client.pushMessage(gid, msg);
-    console.log(`📤 選單已發送至 ${gid}`);
-  } catch (err) {
-    if (err.statusCode === 429 && retry < 3) {
-      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
-      return sendLanguageMenu(gid, retry + 1);
-    }
-    console.error("❌ 發送選單失敗:", err.response?.data || err.message);
+    console.error("選單發送失敗:",e.message);
   }
 };
-const createButton = (label, code) => ({
-  type: "button",
-  action: {
-    type: "postback",
-    label: `${label} (${code.toUpperCase()})`,
-    data: `action=set_lang&code=${code}`
-  },
-  style: "primary",
-  color: "#34B7F1"
-});
 
-// ================= 健康檢查路由 =================
-app.get("/", (req, res) => res.send("OK"));
-app.get("/ping", (req, res) => res.send("pong"));
+// 健康檢查
+app.get("/",(req,res)=>res.send("OK"));
+app.get("/ping",(req,res)=>res.send("pong"));
 
-// ================= 定時自我 PING 防休眠 =================
-const PING_URL = process.env.PING_URL;
-if (PING_URL) {
-  setInterval(() => {
-    https.get(PING_URL, res => console.log(`📡 PING ${res.statusCode}`))
-      .on("error", e => console.error("⚠️ PING 失敗", e.message));
-  }, 10 * 60 * 1000);
-} else {
-  console.warn("⚠️ 未設定 PING_URL");
-}
+// 自我 PING
+setInterval(()=>{
+  https.get(process.env.PING_URL,r=>console.log("PING",r.statusCode))
+       .on("error",e=>console.error("PING失敗",e.message));
+},10*60*1000);
 
-// ================= 伺服器啟動 =================
-app.listen(PORT, async () => {
-  await loadGroupLanguages();
+// 啟動
+app.listen(PORT,async()=>{
+  await loadLang();
   console.log(`🚀 服務運行於 ${PORT}`);
 });
