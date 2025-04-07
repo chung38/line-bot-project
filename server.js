@@ -11,22 +11,18 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // 驗證環境變數
-["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"]
-  .forEach(v => {
-    if (!process.env[v]) {
-      console.error(`❌ 缺少環境變數 ${v}`);
-      process.exit(1);
-    }
-  });
+["LINE_CHANNEL_ACCESS_TOKEN","LINE_CHANNEL_SECRET","DEEPSEEK_API_KEY","PING_URL"].forEach(v=>{
+  if(!process.env[v]){ console.error(`❌ 缺少環境變數 ${v}`); process.exit(1); }
+});
 
-// LINE 客戶端
+// LINE SDK 客戶端
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET
 };
 const client = new Client(lineConfig);
 
-// 載入／儲存群組語言設定
+// 群組語言設定存取
 const LANG_FILE = "./groupLanguages.json";
 let groupLang = new Map();
 
@@ -42,85 +38,72 @@ const loadLang = async () => {
 
 const saveLang = async () => {
   const obj = {};
-  groupLang.forEach((set, g) => {
-    obj[g] = [...set];
-  });
+  groupLang.forEach((set, g) => obj[g] = [...set]);
   try {
     await fs.writeFile(LANG_FILE, JSON.stringify(obj, null, 2));
     console.log("✅ 儲存語言設定");
   } catch (e) {
-    console.error("儲存語言設定失敗:", e);
+    console.error("儲存失敗:", e);
   }
 };
 
 // 判斷是否含中文
 const isChinese = text => /[\u4e00-\u9fff]/.test(text);
 
-// 單語翻譯快取
-const translationCache = new LRUCache({
-  max: 500,
-  ttl: 24 * 60 * 60 * 1000
-});
+// 建立 LRU 快取
+const cache = new LRUCache({ max: 500, ttl: 24*60*60*1000 });
 
-// DeepSeek 翻譯（含快取）
-const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
-  const key = `${targetLang}:${text}`;
-  if (translationCache.has(key)) {
-    return translationCache.get(key);
-  }
+// DeepSeek 單語翻譯（含快取）
+const translateWithDeepSeek = async (text, lang, retry=0) => {
+  const key = `${lang}:${text}`;
+  if (cache.has(key)) return cache.get(key);
 
-  const names = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文", "zh-TW": "繁體中文" };
-  const sys = `你是一名翻譯員，請將以下句子翻譯成${names[targetLang] || targetLang}，僅回傳翻譯結果。`;
+  const names = { en:"英文", th:"泰文", vi:"越南文", id:"印尼文", "zh-TW":"繁體中文" };
+  const sys = `你是一名翻譯員，請將以下句子翻譯成${names[lang]||lang}，僅回傳翻譯結果。`;
 
   try {
     const res = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
-      {
-        model: "deepseek-chat",
-        messages: [
-          { role: "system", content: sys },
-          { role: "user", content: text }
-        ]
-      },
-      { headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` } }
+      { model:"deepseek-chat", messages:[{role:"system",content:sys},{role:"user",content:text}] },
+      { headers:{ Authorization:`Bearer ${process.env.DEEPSEEK_API_KEY}` } }
     );
-    const result = res.data.choices[0].message.content.trim();
-    translationCache.set(key, result);
-    return result;
+    const out = res.data.choices[0].message.content.trim();
+    cache.set(key, out);
+    return out;
   } catch (e) {
-    if (e.response?.status === 429 && retry < 3) {
-      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
-      return translateWithDeepSeek(text, targetLang, retry + 1);
+    if (e.response?.status===429 && retry<3) {
+      await new Promise(r=>setTimeout(r,(retry+1)*5000));
+      return translateWithDeepSeek(text, lang, retry+1);
     }
     console.error("翻譯失敗:", e.message);
     return "（翻譯暫時不可用）";
   }
 };
 
-// Webhook 處理
+// Webhook
 app.post(
   "/webhook",
-  bodyParser.raw({ type: "application/json" }),  // 保留原始資料供簽名驗證
-  middleware(lineConfig),                        // LINE 官方驗證
-  express.json(),                                // 轉 JSON
+  bodyParser.raw({ type:"application/json" }),
+  middleware(lineConfig),
+  express.json(),
   async (req, res) => {
     await Promise.all(req.body.events.map(async event => {
       const gid = event.source?.groupId;
       const txt = event.message?.text;
 
-      // 機器人加入群組 → 顯示選單
+      // 1. join → 顯示選單
       if (event.type === "join" && gid) {
         await sendMenu(gid);
         return;
       }
 
-      // 使用者輸入 !設定 → 顯示選單
+      // 2. !設定 → 顯示選單
       if (event.type === "message" && txt === "!設定" && gid) {
         await sendMenu(gid);
         return;
       }
 
-      // postback → 設定／取消語言
+      // 3. postback → 設定/取消語言
       if (event.type === "postback" && gid) {
         const p = new URLSearchParams(event.postback.data);
         if (p.get("action") === "set_lang") {
@@ -131,42 +114,31 @@ app.post(
           if (set.size) groupLang.set(gid, set);
           else groupLang.delete(gid);
           await saveLang();
-          const names = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
+          const names = { en:"英文", th:"泰文", vi:"越南文", id:"印尼文" };
           const cur = [...set].map(c => names[c]).join("、") || "無";
-          await client.replyMessage(event.replyToken, { type: "text", text: cur });
+          await client.replyMessage(event.replyToken, { type:"text", text:`目前選擇：${cur}` });
         }
         return;
       }
 
-      // 訊息翻譯
+      // 4. 訊息翻譯
       if (event.type === "message" && event.message.type === "text" && gid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
 
-        // ====== 這裡是「翻譯」的程式碼開始 ======
         if (isChinese(txt)) {
           // 中文 → 多語並行
           const codes = [...set];
-          const translations = await Promise.all(
-            codes.map(code => translateWithDeepSeek(txt, code))
-          );
-          // 一次回覆多條，每條加上語言標籤
+          const outs = await Promise.all(codes.map(c => translateWithDeepSeek(txt, c)));
           await client.replyMessage(
             event.replyToken,
-            codes.map((code, idx) => ({
-              type: "text",
-              text: `${code.toUpperCase()}: ${translations[idx]}`
-            }))
+            codes.map((c, i) => ({ type:"text", text: `${c.toUpperCase()}: ${outs[i]}` }))
           );
         } else {
-          // 非中文 → 繁體中文
+          // 非中文 → 繁中
           const t = await translateWithDeepSeek(txt, "zh-TW");
-          // 回覆時也加上標籤
-          await client.replyMessage(event.replyToken, [
-            { type: "text", text: `ZH-TW: ${t}` }
-          ]);
+          await client.replyMessage(event.replyToken, [{ type:"text", text: `ZH-TW: ${t}` }]);
         }
-        // ====== 「翻譯」程式碼結束 ======
       }
     }));
     res.sendStatus(200);
@@ -184,62 +156,54 @@ const canSend = gid => {
   return false;
 };
 
-const sendMenu = async (gid, retry = 0) => {
+const sendMenu = async (gid, retry=0) => {
   if (!canSend(gid)) return;
-  const names = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
-  const buttons = Object.entries(names).map(([code, label]) => ({
-    type: "button",
-    action: { type: "postback", label, data: `action=set_lang&code=${code}` },
-    style: "primary",
-    color: "#34B7F1"
+  const names = { en:"英文", th:"泰文", vi:"越南文", id:"印尼文" };
+  const btns = Object.entries(names).map(([c,l])=>({
+    type:"button",
+    action:{type:"postback",label:l,data:`action=set_lang&code=${c}`},
+    style:"primary",color:"#34B7F1"
   }));
-  buttons.push({
-    type: "button",
-    action: { type: "postback", label: "取消選擇", data: "action=set_lang&code=cancel" },
-    style: "secondary",
-    color: "#FF3B30"
+  btns.push({
+    type:"button",
+    action:{type:"postback",label:"取消選擇",data:"action=set_lang&code=cancel"},
+    style:"secondary",color:"#FF3B30"
   });
 
   const msg = {
-    type: "flex",
-    altText: "語言設定選單",
-    contents: {
-      type: "bubble",
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          { type: "text", text: "🌍 請選擇翻譯語言", weight: "bold" },
-          { type: "separator", margin: "md" },
-          ...buttons
+    type:"flex",altText:"語言設定選單",contents:{
+      type:"bubble",body:{
+        type:"box",layout:"vertical",contents:[
+          {type:"text",text:"🌍 請選擇翻譯語言",weight:"bold"},
+          {type:"separator",margin:"md"},
+          ...btns
         ]
       }
     }
   };
 
-  try {
-    await client.pushMessage(gid, msg);
-  } catch (e) {
-    if (e.statusCode === 429 && retry < 3) {
-      await new Promise(r => setTimeout(r, (retry + 1) * 5000));
-      return sendMenu(gid, retry + 1);
+  try { await client.pushMessage(gid,msg); }
+  catch (e) {
+    if (e.statusCode===429 && retry<3) {
+      await new Promise(r=>setTimeout(r,(retry+1)*5000));
+      return sendMenu(gid,retry+1);
     }
-    console.error("選單發送失敗:", e.message);
+    console.error("選單發送失敗:",e.message);
   }
 };
 
 // 健康檢查
-app.get("/", (req, res) => res.send("OK"));
-app.get("/ping", (req, res) => res.send("pong"));
+app.get("/",(req,res)=>res.send("OK"));
+app.get("/ping",(req,res)=>res.send("pong"));
 
-// 自我 PING 防休眠
-setInterval(() => {
-  https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
-       .on("error", e => console.error("PING 失敗", e.message));
-}, 10 * 60 * 1000);
+// 自我 PING
+setInterval(()=>{
+  https.get(process.env.PING_URL,r=>console.log("📡 PING",r.statusCode))
+       .on("error",e=>console.error("PING 失敗",e.message));
+},10*60*1000);
 
-// 啟動服務
-app.listen(PORT, async () => {
+// 啟動
+app.listen(PORT,async()=>{
   await loadLang();
   console.log(`🚀 服務已啟動，監聽於 ${PORT}`);
 });
