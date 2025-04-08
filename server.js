@@ -106,6 +106,7 @@ app.post(
   async (req, res) => {
     await Promise.all(req.body.events.map(async event => {
       const gid = event.source?.groupId;
+      const uid = event.source?.userId;
       const txt = event.message?.text;
 
       // 機器人加入群組 → 顯示選單
@@ -126,11 +127,8 @@ app.post(
         if (p.get("action") === "set_lang") {
           const code = p.get("code");
           let set = groupLang.get(gid) || new Set();
-          if (code === "cancel") {
-            set.clear();
-          } else {
-            set.has(code) ? set.delete(code) : set.add(code);
-          }
+          if (code === "cancel") set.clear();
+          else set.has(code) ? set.delete(code) : set.add(code);
           if (set.size) groupLang.set(gid, set);
           else groupLang.delete(gid);
           await saveLang();
@@ -142,9 +140,16 @@ app.post(
       }
 
       // 訊息翻譯
-      if (event.type === "message" && event.message.type === "text" && gid) {
+      if (event.type === "message" && event.message.type === "text" && gid && uid) {
         const set = groupLang.get(gid);
         if (!set || set.size === 0) return;
+
+        // 取得使用者顯示名稱
+        let name = uid;
+        try {
+          const profile = await client.getGroupMemberProfile(gid, uid);
+          name = profile.displayName;
+        } catch {}
 
         if (isChinese(txt)) {
           // 中文 → 多語並行
@@ -152,15 +157,20 @@ app.post(
           const translations = await Promise.all(
             codes.map(code => translateWithDeepSeek(txt, code))
           );
-          // 一次回覆多條，每條翻譯結果
-          await client.replyMessage(
-            event.replyToken,
-            translations.map(t => ({ type: "text", text: t }))
-          );
+          // 回覆：第一行標示使用者與原文，其後每行為翻譯
+          const messages = [
+            { type: "text", text: `【${name}】說：${txt}` },
+            ...translations.map(t => ({ type: "text", text: t }))
+          ];
+          await client.replyMessage(event.replyToken, messages);
         } else {
           // 非中文 → 繁中
           const t = await translateWithDeepSeek(txt, "zh-TW");
-          await client.replyMessage(event.replyToken, [{ type: "text", text: t }]);
+          const messages = [
+            { type: "text", text: `【${name}】說：${txt}` },
+            { type: "text", text: t }
+          ];
+          await client.replyMessage(event.replyToken, messages);
         }
       }
     }));
