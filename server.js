@@ -11,7 +11,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // 檢查必要環境變數
-["LINE_CHANNEL_ACCESS_TOKEN","LINE_CHANNEL_SECRET","DEEPSEEK_API_KEY","PING_URL"].forEach(v => {
+["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "DEEPSEEK_API_KEY", "PING_URL"].forEach(v => {
   if (!process.env[v]) {
     console.error(`缺少環境變數 ${v}`);
     process.exit(1);
@@ -83,15 +83,18 @@ const translateWithDeepSeek = async (text, targetLang, retry = 0) => {
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
   const names = { en:"英文", th:"泰文", vi:"越南文", id:"印尼文", "zh-TW":"繁體中文" };
-  const sys = `你是一名翻譯員，請將以下句子翻譯成${names[targetLang]||targetLang}，僅回傳翻譯結果。`;
+  const sys = `你是一名翻譯員，請將以下句子翻譯成${names[targetLang] || targetLang}，僅回傳翻譯結果。`;
 
   try {
     const res = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
-      { model:"deepseek-chat", messages:[
-          { role:"system", content: sys },
-          { role:"user", content: text }
-        ] },
+      {
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: text }
+        ]
+      },
       { headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` } }
     );
     const out = res.data.choices[0].message.content.trim();
@@ -120,17 +123,14 @@ const getUserName = async (gid, uid) => {
 // 處理 webhook
 app.post(
   "/webhook",
-  bodyParser.raw({ type:"application/json" }),
+  bodyParser.raw({ type: "application/json" }),
   middleware(lineConfig),
   express.json(),
   async (req, res) => {
-    // 立刻回應 LINE，避免 Render 超時
     res.sendStatus(200);
 
-    // Debug: 印出收到的 event
     console.log("🔔 Received event:", JSON.stringify(req.body, null, 2));
 
-    // 非同步處理所有 events
     Promise.all(req.body.events.map(async event => {
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
@@ -153,7 +153,7 @@ app.post(
       // 3. 使用者輸入 !設定 → 僅 inviter 可以打開選單
       if (event.type === "message" && txt === "!設定" && gid) {
         if (groupInviter.get(gid) !== uid) {
-          await client.replyMessage(event.replyToken, { type:"text", text:"只有設定者可以更改語言選單。" });
+          await client.replyMessage(event.replyToken, { type: "text", text: "只有設定者可以更改語言選單。" });
           return;
         }
         await sendMenu(gid);
@@ -174,9 +174,9 @@ app.post(
           else groupLang.delete(gid);
           await saveLang();
 
-          const names = { en:"英文", th:"泰文", vi:"越南文", id:"印尼文" };
+          const names = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
           const cur = [...(groupLang.get(gid) || [])].map(c => names[c]).join("、") || "無";
-          await client.replyMessage(event.replyToken, { type:"text", text:`目前選擇：${cur}` });
+          await client.replyMessage(event.replyToken, { type: "text", text: `目前選擇：${cur}` });
         }
         return;
       }
@@ -216,29 +216,29 @@ const canSend = gid => {
 
 const sendMenu = async (gid, retry = 0) => {
   if (!canSend(gid)) return;
-  const names = { en:"英文", th:"泰文", vi:"越南文", id:"印尼文" };
-  const buttons = Object.entries(names).map(([code,label]) => ({
-    type:"button",
-    action:{ type:"postback", label, data:`action=set_lang&code=${code}` },
-    style:"primary", color:"#34B7F1"
+  const names = { en: "英文", th: "泰文", vi: "越南文", id: "印尼文" };
+  const buttons = Object.entries(names).map(([code, label]) => ({
+    type: "button",
+    action: { type: "postback", label, data: `action=set_lang&code=${code}` },
+    style: "primary", color: "#34B7F1"
   }));
   buttons.push({
-    type:"button",
-    action:{ type:"postback", label:"取消選擇", data:"action=set_lang&code=cancel" },
-    style:"secondary", color:"#FF3B30"
+    type: "button",
+    action: { type: "postback", label: "取消選擇", data: "action=set_lang&code=cancel" },
+    style: "secondary", color: "#FF3B30"
   });
 
   const msg = {
-    type:"flex",
-    altText:"語言設定選單",
-    contents:{
-      type:"bubble",
-      body:{
-        type:"box",
-        layout:"vertical",
-        contents:[
-          { type:"text", text:"🌍 請選擇翻譯語言", weight:"bold" },
-          { type:"separator", margin:"md" },
+    type: "flex",
+    altText: "語言設定選單",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          { type: "text", text: "🌍 請選擇翻譯語言", weight: "bold" },
+          { type: "separator", margin: "md" },
           ...buttons
         ]
       }
@@ -261,7 +261,7 @@ app.get("/", (_, res) => res.send("OK"));
 app.get("/ping", (_, res) => res.send("pong"));
 setInterval(() => {
   https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
-       .on("error", e => console.error("PING 失敗", e.message));
+    .on("error", e => console.error("PING 失敗", e.message));
 }, 10 * 60 * 1000);
 
 // 啟動
