@@ -19,7 +19,7 @@
     "express": "^4.21.2",
     "limiter": "^3.0.0",
     "lru-cache": "^6.0.0",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
     "firebase-admin": "^11.10.1"
   },
   "devDependencies": {
