@@ -684,6 +684,11 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 continue;
               }
             }
+            if (/[\u4e00-\u9fff]/.test(zh)) {
+               translatedLine += zh.trim();
+                continue;
+            }
+
             const finalZh = await translateWithDeepSeek(zh, "zh-TW", gid);
             if (finalZh) {
               if (finalZh.trim() === zh.trim()) {
@@ -823,27 +828,38 @@ app.listen(PORT, async () => {
 });
 
 function preprocessThaiWorkPhrase(text) {
-  // 轉換時間格式
-  text = text.replace(/(\d{1,2})\.(\d{2})/, "$1:$2");
+  const input = text;
+  text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2");
+  console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
 
-  // 上班群
-  if (/ลงทำงาน|ลงงาน|เข้าเวร|เข้างาน/.test(text) || (/ลง/.test(text) && /(\d{1,2}:\d{2})/.test(text))) {
+  // 例外排除關鍵字
+  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
+
+  if (
+    /ลง/.test(text) &&
+    /(\d{1,2}:\d{2})/.test(text) &&
+    !exceptionKeywords.test(text)
+  ) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
-      return `今天我${timeMatch[1]}開始上班`;
+      const result = `今天我${timeMatch[1]}開始上班`;
+      console.log(`[預處理結果] → "${result}"`);
+      return result;
     }
+    console.log(`[預處理結果] → "今天我開始上班"`);
     return "今天我開始上班";
   }
-
-  // 下班群
   if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
     const timeMatch = text.match(/(\d{1,2}:\d{2})/);
     if (timeMatch) {
-      return `今天我${timeMatch[1]}下班`;
+      const result = `今天我${timeMatch[1]}下班`;
+      console.log(`[預處理結果] → "${result}"`);
+      return result;
     }
+    console.log(`[預處理結果] → "今天我下班"`);
     return "今天我下班";
   }
-
+  console.log(`[預處理結果] (無匹配) → "${text}"`);
   return text;
 }
 
