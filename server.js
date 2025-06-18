@@ -425,6 +425,8 @@ function buildIndustryMenu() {
 }
 
 // === Webhook 主要邏輯 ===
+
+
 app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
   const events = req.body.events || [];
@@ -432,8 +434,8 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
     try {
       const gid = event.source?.groupId;
       const uid = event.source?.userId;
-      if (event.type === "leave" && event.source?.groupId) {
-        const gid = event.source.groupId;
+
+      if (event.type === "leave" && gid) {
         const ops = [
           { type: "delete", ref: db.collection("groupLanguages").doc(gid) },
           { type: "delete", ref: db.collection("groupIndustries").doc(gid) },
@@ -536,6 +538,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
       // === 這裡開始訊息翻譯區塊（已改為分語言集中顯示） ===
       if (event.type === "message" && event.message.type === "text" && gid) {
         const text = event.message.text.trim();
+
         if (text === "!設定") {
           if (!groupInviter.has(gid) && uid) {
             groupInviter.set(gid, uid);
@@ -628,7 +631,9 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         for (let code of set) {
           langOutputs[code] = [];
         }
-        langOutputs["zh-TW"] = []; // 中文也一併收集
+
+        // 偵測輸入語言
+        const inputLang = detectLang(text);
 
         // 處理每一行
         for (let idx = 0; idx < lines.length; idx++) {
@@ -649,35 +654,58 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
             segs.push({ type: "text", text: line.slice(lastIndex) });
           }
 
-          // 先產生繁體中文
-          let zhLine = "";
-          for (const seg of segs) {
-            if (seg.type === "mention") {
-              zhLine += seg.text;
-            } else if (seg.type === "text" && seg.text.trim()) {
-              let textParts = seg.text.split(urlRegex);
-              for (let i = 0; i < textParts.length; i++) {
-                const part = textParts[i];
-                if (urlRegex.test(part)) {
-                  zhLine += part;
-                } else if (part.trim()) {
-                  if (isSymbolOrNum(part)) {
-                    zhLine += part;
-                    continue;
+          if (inputLang === "zh-TW") {
+            // 輸入中文：翻譯成其他語言（不翻譯 mention 與網址）
+            for (let code of set) {
+              if (code === "zh-TW") continue;
+              let outLine = "";
+              for (const seg of segs) {
+                if (seg.type === "mention") {
+                  outLine += seg.text;
+                } else if (seg.type === "text" && seg.text.trim()) {
+                  let textParts = seg.text.split(urlRegex);
+                  for (let i = 0; i < textParts.length; i++) {
+                    const part = textParts[i];
+                    if (urlRegex.test(part)) {
+                      outLine += part;
+                    } else if (part.trim()) {
+                      if (isSymbolOrNum(part)) {
+                        outLine += part;
+                        continue;
+                      }
+                      const tr = await translateWithDeepSeek(part, code, gid);
+                      outLine += tr.trim();
+                    }
                   }
-                  const srcLang = detectLang(part);
-                  if (srcLang === "zh-TW") {
+                }
+              }
+              langOutputs[code].push(restoreMentions(outLine, segments));
+            }
+          } else {
+            // 輸入非中文：翻譯成繁體中文（不翻譯 mention 與網址）
+            let zhLine = "";
+            for (const seg of segs) {
+              if (seg.type === "mention") {
+                zhLine += seg.text;
+              } else if (seg.type === "text" && seg.text.trim()) {
+                let textParts = seg.text.split(urlRegex);
+                for (let i = 0; i < textParts.length; i++) {
+                  const part = textParts[i];
+                  if (urlRegex.test(part)) {
                     zhLine += part;
-                  } else {
+                  } else if (part.trim()) {
+                    if (isSymbolOrNum(part)) {
+                      zhLine += part;
+                      continue;
+                    }
                     let zh = part;
-                    if (srcLang === "th") {
+                    if (detectLang(part) === "th") {
                       zh = preprocessThaiWorkPhrase(zh);
                     }
-                    if (srcLang === "th" && /ทำโอ/.test(part)) {
+                    if (detectLang(part) === "th" && /ทำโอ/.test(part)) {
                       const smartZh = await smartPreprocess(part, "th");
                       if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                        zhLine += smartZh.trim();
-                        continue;
+                        zh = smartZh.trim();
                       }
                     }
                     if (/[\u4e00-\u9fff]/.test(zh)) {
@@ -690,68 +718,30 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 }
               }
             }
+            langOutputs["zh-TW"] = langOutputs["zh-TW"] || [];
+            langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
           }
-          langOutputs["zh-TW"].push(restoreMentions(zhLine, segments));
+        }
 
-          // 其餘語言翻譯
+        // 組裝回覆文字
+        let replyText = "";
+        if (inputLang === "zh-TW") {
+          // 輸入中文：只顯示翻譯成其他語言的結果
           for (let code of set) {
             if (code === "zh-TW") continue;
-            let outLine = "";
-            for (const seg of segs) {
-              if (seg.type === "mention") {
-                outLine += seg.text;
-              } else if (seg.type === "text" && seg.text.trim()) {
-                let textParts = seg.text.split(urlRegex);
-                for (let i = 0; i < textParts.length; i++) {
-                  const part = textParts[i];
-                  if (urlRegex.test(part)) {
-                    outLine += part;
-                  } else if (part.trim()) {
-                    if (isSymbolOrNum(part)) {
-                      outLine += part;
-                      continue;
-                    }
-                    const srcLang = detectLang(part);
-                    if (srcLang === "zh-TW") {
-                      const tr = await translateWithDeepSeek(part, code, gid);
-                      outLine += tr.trim();
-                    } else {
-                      // 先轉中文再轉目標語言
-                      let zh = part;
-                      if (srcLang === "th") {
-                        zh = preprocessThaiWorkPhrase(zh);
-                      }
-                      if (srcLang === "th" && /ทำโอ/.test(part)) {
-                        const smartZh = await smartPreprocess(part, "th");
-                        if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                          zh = smartZh.trim();
-                        }
-                      }
-                      if (!/[\u4e00-\u9fff]/.test(zh)) {
-                        zh = await translateWithDeepSeek(zh, "zh-TW", gid);
-                      }
-                      const tr = await translateWithDeepSeek(zh, code, gid);
-                      outLine += tr.trim();
-                    }
-                  }
-                }
-              }
+            if (langOutputs[code] && langOutputs[code].length) {
+              replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
             }
-            langOutputs[code].push(restoreMentions(outLine, segments));
           }
-        }
-
-        // 組裝輸出
-        let replyText = "";
-        // 中文原文
-        if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
-          replyText += `【繁體中文】\n${langOutputs["zh-TW"].join('\n')}\n\n`;
-        }
-        // 其他語言依設定順序
-        for (let code of set) {
-          if (code === "zh-TW") continue;
-          if (langOutputs[code] && langOutputs[code].length) {
-            replyText += `【${SUPPORTED_LANGS[code]}】\n${langOutputs[code].join('\n')}\n\n`;
+          if (!replyText) {
+            replyText = "(尚無翻譯結果)";
+          }
+        } else {
+          // 輸入外語：只顯示繁體中文翻譯結果
+          if (langOutputs["zh-TW"] && langOutputs["zh-TW"].length) {
+            replyText = `${langOutputs["zh-TW"].join('\n')}`;
+          } else {
+            replyText = "(尚無翻譯結果)";
           }
         }
 
@@ -763,9 +753,13 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
       }
     } catch (e) {
       console.error("處理事件錯誤:", e);
+      if (e.response?.data) {
+        console.error("LINE API 回應錯誤:", e.response.data);
+      }
     }
   }));
 });
+
 // === 文宣推播 ===
 async function fetchImageUrlsByDate(gid, dateStr) {
   try {
