@@ -819,7 +819,6 @@ async function sendImagesToGroup(gid, dateStr) {
 }
 
 // === 定時任務 ===
-// 定時推播文宣
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
     timeZone: "Asia/Taipei",
@@ -828,15 +827,56 @@ cron.schedule("0 17 * * *", async () => {
     day: "2-digit"
   }).replace(/\//g, "-");
 
+  console.log(`開始推播 ${today} 文宣圖片到 ${groupLang.size} 個群組`);
+  
+  let successCount = 0;
+  let failCount = 0;
+  
   for (const [gid] of groupLang.entries()) {
     try {
-      await sendImagesToGroup(gid, today);
-      console.log(`✅ 群組 ${gid} 已推播`);
+      const imgs = await fetchImageUrlsByDate(gid, today);
+      
+      if (!imgs || imgs.length === 0) {
+        console.warn(`⚠️ 群組 ${gid} 今日無可推播圖片`);
+        continue;
+      }
+      
+      // 逐張推播圖片，每張間隔 500ms
+      for (let i = 0; i < imgs.length; i++) {
+        const url = imgs[i];
+        try {
+          await client.pushMessage(gid, {
+            type: "image",
+            originalContentUrl: url,
+            previewImageUrl: url
+          });
+          console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
+          
+          // 每張圖片間延遲 500ms
+          if (i < imgs.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        } catch (e) {
+          console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
+          failCount++;
+        }
+      }
+      
+      successCount++;
+      console.log(`✅ 群組 ${gid} 推播完成`);
+      
+      // 每個群組間延遲 2 秒，避免觸發速率限制
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
     } catch (e) {
       console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
+      failCount++;
     }
   }
+  
+  console.log(`📊 推播統計：成功 ${successCount} 個群組，失敗 ${failCount} 個群組`);
 }, { timezone: "Asia/Taipei" });
+
 
 // === PING 伺服器 ===
 setInterval(() => {
