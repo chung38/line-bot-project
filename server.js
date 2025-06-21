@@ -828,54 +828,69 @@ cron.schedule("0 17 * * *", async () => {
   }).replace(/\//g, "-");
 
   console.log(`開始推播 ${today} 文宣圖片到 ${groupLang.size} 個群組`);
-  
+
   let successCount = 0;
   let failCount = 0;
-  
+
+  async function pushMessageWithRetry(gid, message, retries = 3, delay = 2000) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        await client.pushMessage(gid, message);
+        return true;
+      } catch (e) {
+        console.error(`推播失敗，群組 ${gid} 第 ${attempt} 次嘗試:`, e.message);
+        if (attempt < retries) {
+          await new Promise(res => setTimeout(res, delay));
+        }
+      }
+    }
+    return false;
+  }
+
   for (const [gid] of groupLang.entries()) {
     try {
       const imgs = await fetchImageUrlsByDate(gid, today);
-      
+
       if (!imgs || imgs.length === 0) {
         console.warn(`⚠️ 群組 ${gid} 今日無可推播圖片`);
         continue;
       }
-      
-      // 逐張推播圖片，每張間隔 500ms
+
       for (let i = 0; i < imgs.length; i++) {
         const url = imgs[i];
-        try {
-          await client.pushMessage(gid, {
-            type: "image",
-            originalContentUrl: url,
-            previewImageUrl: url
-          });
+        const success = await pushMessageWithRetry(gid, {
+          type: "image",
+          originalContentUrl: url,
+          previewImageUrl: url
+        });
+
+        if (success) {
           console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
-          
-          // 每張圖片間延遲 500ms
-          if (i < imgs.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-        } catch (e) {
-          console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
+        } else {
+          console.error(`❌ 群組 ${gid} 推播圖片失敗：${url}`);
           failCount++;
         }
+
+        if (i < imgs.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
       }
-      
+
       successCount++;
       console.log(`✅ 群組 ${gid} 推播完成`);
-      
-      // 每個群組間延遲 2 秒，避免觸發速率限制
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
+
+      // 群組間隔改為 5秒
+      await new Promise(resolve => setTimeout(resolve, 5000));
+
     } catch (e) {
       console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
       failCount++;
     }
   }
-  
+
   console.log(`📊 推播統計：成功 ${successCount} 個群組，失敗 ${failCount} 個群組`);
 }, { timezone: "Asia/Taipei" });
+
 
 
 // === PING 伺服器 ===
