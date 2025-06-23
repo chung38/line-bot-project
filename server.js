@@ -820,7 +820,7 @@ async function sendImagesToGroup(gid, dateStr) {
 
 // === 定時任務 ===
 const BATCH_SIZE = 10;      // 每批群組數量
-const BATCH_INTERVAL = 60000; // 批次間隔時間，單位毫秒（1分鐘）
+const BATCH_INTERVAL = 90000; // 批次間隔時間，單位毫秒（1分鐘）
 
 cron.schedule("0 17 * * *", async () => {
   const today = new Date().toLocaleDateString("zh-TW", {
@@ -864,7 +864,7 @@ cron.schedule("0 17 * * *", async () => {
             console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
 
             if (i < imgs.length - 1) {
-              await new Promise(resolve => setTimeout(resolve, 500)); // 圖片間隔500ms
+              await new Promise(resolve => setTimeout(resolve,1000)); // 圖片間隔500ms
             }
           } catch (e) {
             console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
@@ -875,7 +875,7 @@ cron.schedule("0 17 * * *", async () => {
         successCount++;
         console.log(`✅ 群組 ${gid} 推播完成`);
 
-        await new Promise(resolve => setTimeout(resolve, 2000)); // 群組間隔2秒
+        await new Promise(resolve => setTimeout(resolve, 3000)); // 群組間隔2秒
 
       } catch (e) {
         console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
