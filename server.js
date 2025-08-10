@@ -8,7 +8,11 @@ import { LRUCache } from "lru-cache";
 import admin from "firebase-admin";
 import cron from "node-cron";
 import rateLimit from "express-rate-limit";
+import OpenAI from "openai";
 
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 // === Firebase 初始化 ===
 try {
   const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
@@ -27,7 +31,7 @@ app.set('trust proxy', 1);
 const requiredEnv = [
   "LINE_CHANNEL_ACCESS_TOKEN",
   "LINE_CHANNEL_SECRET",
-  "DEEPSEEK_API_KEY",
+  "OPENAI_API_KEY",
   "PING_URL"
 ];
 const missingEnv = requiredEnv.filter(v => !process.env[v]);
@@ -128,44 +132,44 @@ const isSymbolOrNum = txt =>
 
 // === 泰文預處理函式 ===
 // 泰文預處理函式
-function preprocessThaiWorkPhrase(text) {
-  const input = text;
-  text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2"); // 時間格式標準化，例如15.00 => 15:00
+//function preprocessThaiWorkPhrase(text) {
+ // const input = text;
+ // text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2"); // 時間格式標準化，例如15.00 => 15:00
   //console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
 
-  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
+//  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
 
   // 判斷上班類型
-  if (
-    /ลง/.test(text) &&
-    /(\d{1,2}:\d{2})/.test(text) &&
-    !exceptionKeywords.test(text)
-  ) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      const result = `今天我${timeMatch[1]}開始上班`;
+//  if (
+//    /ลง/.test(text) &&
+//    /(\d{1,2}:\d{2})/.test(text) &&
+//    !exceptionKeywords.test(text)
+//  ) {
+//    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
+//    if (timeMatch) {
+//      const result = `今天我${timeMatch[1]}開始上班`;
       //console.log(`[預處理結果] → "${result}"`);
-      return result;
-    }
+//      return result;
+//    }
     //console.log(`[預處理結果] → "今天我開始上班"`);
-    return "今天我開始上班";
-  }
+//    return "今天我開始上班";
+//  }
 
   // 判斷下班類型
-  if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
-    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-    if (timeMatch) {
-      const result = `今天我${timeMatch[1]}下班`;
+//  if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
+ //   const timeMatch = text.match(/(\d{1,2}:\d{2})/);
+  //  if (timeMatch) {
+//      const result = `今天我${timeMatch[1]}下班`;
       //console.log(`[預處理結果] → "${result}"`);
-      return result;
-    }
+  //    return result;
+  //  }
     //console.log(`[預處理結果] → "今天我下班"`);
-    return "今天我下班";
-  }
+ //   return "今天我下班";
+//  }
 
   //console.log(`[預處理結果] (無匹配) → "${text}"`);
-  return text;
-}
+//  return text;
+// }
 
 // 提取 mention，替換為 __MENTION_x__ ，保留空白，segments 記錄原文
 // 提取 Mention，替換為 __MENTION_x__ ，並保留原文
@@ -206,8 +210,8 @@ function extractMentionsFromLineMessage(message) {
   newMasked += masked.slice(last);
   masked = newMasked;
 
- // console.log("【debug】masked:", JSON.stringify(masked));
- // console.log("【debug】segments:", JSON.stringify(segments));
+  console.log("【debug】masked:", JSON.stringify(masked));
+  console.log("【debug】segments:", JSON.stringify(segments));
   return { masked, segments };
 }
 
@@ -222,39 +226,43 @@ function restoreMentions(text, segments) {
 }
 
 // === AI 翻譯 ===
-async function smartPreprocess(text, langCode) {
-  if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
-  const cacheKey = `th_ot:${text.replace(/\s+/g, ' ').trim()}`;
-  if (smartPreprocessCache.has(cacheKey)) return smartPreprocessCache.get(cacheKey);
-  const prompt = `
-你是專門判斷泰文工廠輪班加班語意的 AI。
-請判斷下列句子是否表示「工廠整廠加班」：
-- 如果是，請直接回覆「全廠加班」。
-- 如果只是個人加班或其他意思，請原文翻譯成中文，不要改動語意。
-原文：${text}
-`.trim();
-  try {
-    const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
-      model: "deepseek-chat",
-      messages: [
-        { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
-        { role: "user", content: prompt }
-      ]
-    }, {
-      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
-    });
-    const result = res.data.choices[0].message.content.trim();
-    smartPreprocessCache.set(cacheKey, result);
-    return result;
-  } catch (e) {
-    console.error("smartPreprocess API 錯誤:", e.message);
-    return text;
-  }
-}
+// async function smartPreprocess(text, langCode) {
+//  if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
+//  const cacheKey = `th_ot:${text.replace(/\s+/g, ' ').trim()}`;
+//  if (smartPreprocessCache.has(cacheKey)) return smartPreprocessCache.get(cacheKey);
+//  const prompt = `
+//你是專門判斷泰文工廠輪班加班語意的 AI。
+//請判斷下列句子是否表示「工廠整廠加班」：
+//- 如果是，請直接回覆「全廠加班」。
+//- 如果只是個人加班或其他意思，請原文翻譯成中文，不要改動語意。
+//原文：${text}
+//`.trim();
+//  try {
+ //   const res = await axios.post("https://api.openai.com/v1/chat/completions", {
+ //     model: "gpt-4",
+//      messages: [
+//        { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
+//        { role: "user", content: prompt }
+//      ]
+//    }, {
+//      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+//    });
+//    const result = res.data.choices[0].message.content.trim();
+//    smartPreprocessCache.set(cacheKey, result);
+//    return result;
+//  } catch (e) {
+//    console.error("smartPreprocess API 錯誤:", e.message);
+//    return text;
+//  }
+// }
 
-const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
+const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
   const industry = gid ? groupIndustry.get(gid) : null;
-  const industryPrompt = industry ? `本翻譯內容屬於「${industry}」行業，請使用該行業專業術語。` : "";
+  const industryPrompt = industry
+  ? `你是一位熟悉「${industry}」行業專用語的專業翻譯員。` +
+    `如果遇到專業詞彙，切勿用日常語言直譯，應根據行業上下文調整詞彙、判斷。` +
+    `所有翻譯結果請保留專業性，不添加解釋。`
+  : "";
   let systemPrompt = customPrompt;
 
   if (!systemPrompt) {
@@ -269,15 +277,15 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey);
 
   try {
-    const res = await axios.post("https://api.deepseek.com/v1/chat/completions", {
-      model: "deepseek-chat",
+    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
+      model: "gpt-5-mini",
       messages: [
         { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
         { role: "user", content: text }
       ]
     }, {
-      headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` }
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
     });
 
     let out = res.data.choices[0].message.content.trim();
@@ -290,7 +298,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
       if (out === text.trim()) {
         if (retry < 3) {
           const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
-          return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
+          return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
         } else {
           out = "（翻譯異常，請稍後再試）";
         }
@@ -299,7 +307,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
       else if (!/[\u4e00-\u9fff]/.test(out)) {
         if (retry < 3) {
           const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
-          return translateWithDeepSeek(text, targetLang, gid, retry + 1, strongPrompt);
+          return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
         } else {
           out = "（翻譯異常，請稍後再試）";
         }
@@ -311,7 +319,7 @@ const translateWithDeepSeek = async (text, targetLang, gid = null, retry = 0, cu
   } catch (e) {
     if (e.response?.status === 429 && retry < 3) {
       await new Promise(r => setTimeout(r, (retry + 1) * 5000));
-      return translateWithDeepSeek(text, targetLang, gid, retry + 1, customPrompt);
+      return translateWithChatGPT(text, targetLang, gid, retry + 1, customPrompt);
     }
     //console.error("翻譯失敗:", e.message, e.response?.data || "");
     return "（翻譯暫時不可用）";
@@ -713,7 +721,7 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         const set = groupLang.get(gid) || new Set();
         const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
         if (skipTranslatePattern.test(textForLangDetect)) {
-           //console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
+           console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
            return;  // 直接跳過或另外回覆原文
         }
         if (set.size === 0) return;
@@ -768,18 +776,18 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                     outLine += beforeUrl;
                   } else {
                     let toTranslate = beforeUrl.trim();
-                    if (code === "zh-TW" && detectLang(toTranslate) === "th") {
-                      toTranslate = preprocessThaiWorkPhrase(toTranslate);
+               //     if (code === "zh-TW" && detectLang(toTranslate) === "th") {
+                 //     toTranslate = preprocessThaiWorkPhrase(toTranslate);
 
                       // 可以加進階判斷 smartPreprocess
-                      if (/ทำโอ/.test(toTranslate)) {
-                        const smartZh = await smartPreprocess(toTranslate, "th");
+               //       if (/ทำโอ/.test(toTranslate)) {
+               //         const smartZh = await smartPreprocess(toTranslate, "th");
                         if (/[\u4e00-\u9fff]/.test(smartZh)) {
                           toTranslate = smartZh.trim();
                         }
-                      }
-                    }
-                    const tr = await translateWithDeepSeek(toTranslate, code, gid);
+                      // }
+                 //   }
+                    const tr = await translateWithChatGPT(toTranslate, code, gid);
                     outLine += tr.trim();
                   }
                 }
@@ -793,16 +801,16 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
                   outLine += afterLastUrl;
                 } else {
-                  if (code === "zh-TW" && detectLang(toTranslate) === "th") {
-                    toTranslate = preprocessThaiWorkPhrase(toTranslate);
-                    if (/ทำโอ/.test(toTranslate)) {
-                      const smartZh = await smartPreprocess(toTranslate, "th");
-                      if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                        toTranslate = smartZh.trim();
-                      }
-                    }
-                  }
-                  const tr = await translateWithDeepSeek(toTranslate, code, gid);
+                //  if (code === "zh-TW" && detectLang(toTranslate) === "th") {
+                 //   toTranslate = preprocessThaiWorkPhrase(toTranslate);
+                 //   if (/ทำโอ/.test(toTranslate)) {
+                 //     const smartZh = await smartPreprocess(toTranslate, "th");
+                 //     if (/[\u4e00-\u9fff]/.test(smartZh)) {
+                 //       toTranslate = smartZh.trim();
+                 //     }
+                 //   }
+                 // }
+                  const tr = await translateWithChatGPT(toTranslate, code, gid);
                   outLine += tr.trim();
                 }
               }
