@@ -71,6 +71,7 @@ const SUPPORTED_LANGS = {
   id: "印尼文",
   "zh-TW": "繁體中文"
 };
+
 const LANG_ICONS = { en: "🇬🇧", th: "🇹🇭", vi: "🇻🇳", id: "🇮🇩" };
 const LANGS = {
   en: "英文",
@@ -85,13 +86,13 @@ Object.entries(LANGS).forEach(([k, v]) => {
   NAME_TO_CODE[v] = k;
 });
 const INDUSTRY_LIST = [
-  "家具業","畜牧業","建築營造業","印染整理業", "紡紗及織布業","禽畜糞加工業", "紡織纖維及紗線業", "化學相關製造業", "金屬相關製造業", "醫療器材相關業", "運輸工具製造業", "光電及光學相關業","電子零組件相關業", "機械設備製造修配業", "玻璃及玻璃製品製造業", "橡膠及塑膠製品製造業", "食品加工及農畜產品批發業"
+  "家具業","畜牧業","建築營造業","印染整理業", "紡紗及織布業","禽畜糞加工業", "紡織纖維及紗線業", "化學相關製造業", "金屬相關製造業", "醫療器材相關業", "運輸工具製造業", "光電及光學相關業","電子零組件相關業", "機械設備製造修配業", "玻璃及玻璃製品製造業", "橡膠及塑膠製品製造業", "食用菌菇類栽培業", "蛋製品製造、加工、調配業"
 ];
 
 // === i18n 國際化設定 ===
 const i18n = {
   'zh-TW': {
-    menuTitle: '🌏 群組自動翻譯語言設定',
+    menuTitle: '翻譯語言設定',
     industrySet: '🏭 行業別已設為：{industry}',
     industryCleared: '❌ 已清除行業別',
     langSelected: '✅ 已選擇語言：{langs}',
@@ -121,58 +122,13 @@ const detectLang = (text) => {
   return 'en';
 };
 
-// 判斷是否有中文字
 function hasChinese(txt) {
   return /[\u4e00-\u9fff]/.test(txt);
 }
 
-// 判斷純符號/數字（跳過不翻譯）
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'“”‘’（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
-// === 泰文預處理函式 ===
-// 泰文預處理函式
-//function preprocessThaiWorkPhrase(text) {
- // const input = text;
- // text = text.replace(/(\d{1,2})[.:](\d{2})/, "$1:$2"); // 時間格式標準化，例如15.00 => 15:00
-  //console.log(`[預處理] 原始: "${input}" → 標準化: "${text}"`);
-
-//  const exceptionKeywords = /(ชื่อ|สมัคร|ทะเบียน|ส่ง|รายงาน)/;
-
-  // 判斷上班類型
-//  if (
-//    /ลง/.test(text) &&
-//    /(\d{1,2}:\d{2})/.test(text) &&
-//    !exceptionKeywords.test(text)
-//  ) {
-//    const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-//    if (timeMatch) {
-//      const result = `今天我${timeMatch[1]}開始上班`;
-      //console.log(`[預處理結果] → "${result}"`);
-//      return result;
-//    }
-    //console.log(`[預處理結果] → "今天我開始上班"`);
-//    return "今天我開始上班";
-//  }
-
-  // 判斷下班類型
-//  if (/เลิกงาน|ออกเวร|ออกงาน/.test(text)) {
- //   const timeMatch = text.match(/(\d{1,2}:\d{2})/);
-  //  if (timeMatch) {
-//      const result = `今天我${timeMatch[1]}下班`;
-      //console.log(`[預處理結果] → "${result}"`);
-  //    return result;
-  //  }
-    //console.log(`[預處理結果] → "今天我下班"`);
- //   return "今天我下班";
-//  }
-
-  //console.log(`[預處理結果] (無匹配) → "${text}"`);
-//  return text;
-// }
-
-// 提取 mention，替換為 __MENTION_x__ ，保留空白，segments 記錄原文
-// 提取 Mention，替換為 __MENTION_x__ ，並保留原文
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
@@ -186,7 +142,6 @@ function extractMentionsFromLineMessage(message) {
     });
   }
 
-  // 手動 @mention 處理
   const manualRegex = /@([^\s@，,。、:：;；!?！()\[\]{}【】（）]+)/g;
   let idx = segments.length;
   let newMasked = '';
@@ -210,12 +165,9 @@ function extractMentionsFromLineMessage(message) {
   newMasked += masked.slice(last);
   masked = newMasked;
 
-  console.log("【debug】masked:", JSON.stringify(masked));
-  console.log("【debug】segments:", JSON.stringify(segments));
   return { masked, segments };
 }
 
-// 還原 Mention 佔位符
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
@@ -224,37 +176,6 @@ function restoreMentions(text, segments) {
   });
   return restored;
 }
-
-// === AI 翻譯 ===
-// async function smartPreprocess(text, langCode) {
-//  if (langCode !== "th" || !/ทำโอ/.test(text)) return text;
-//  const cacheKey = `th_ot:${text.replace(/\s+/g, ' ').trim()}`;
-//  if (smartPreprocessCache.has(cacheKey)) return smartPreprocessCache.get(cacheKey);
-//  const prompt = `
-//你是專門判斷泰文工廠輪班加班語意的 AI。
-//請判斷下列句子是否表示「工廠整廠加班」：
-//- 如果是，請直接回覆「全廠加班」。
-//- 如果只是個人加班或其他意思，請原文翻譯成中文，不要改動語意。
-//原文：${text}
-//`.trim();
-//  try {
- //   const res = await axios.post("https://api.openai.com/v1/chat/completions", {
- //     model: "gpt-4",
-//      messages: [
-//        { role: "system", content: "你是專門翻譯工廠加班/停工的語意判斷 AI" },
-//        { role: "user", content: prompt }
-//      ]
-//    }, {
-//      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
-//    });
-//    const result = res.data.choices[0].message.content.trim();
-//    smartPreprocessCache.set(cacheKey, result);
-//    return result;
-//  } catch (e) {
-//    console.error("smartPreprocess API 錯誤:", e.message);
-//    return text;
-//  }
-// }
 
 const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, customPrompt) => {
   const industry = gid ? groupIndustry.get(gid) : null;
@@ -267,9 +188,9 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
 
   if (!systemPrompt) {
     if (targetLang === "zh-TW") {
-      systemPrompt = `你是一位台灣專業人工翻譯員，請將下列句子完整且忠實地翻譯成繁體中文，絕對不要保留原文或部分原文，請**不要更改任何幣別符號**，例如「$」請保留原樣，${industryPrompt}請不要加任何解釋、說明、標註、括號或符號。`;
+      systemPrompt = `你是一位台灣工廠專業人工翻譯，請完整且忠實地將下列內容每一行都翻譯成繁體中文（無論原文內容是人名、代號、簡稱、職稱、分工…），每行都不可照抄原文、需以中文翻出，如無可翻譯則音譯之；換行、標點、數字須依原樣保留。不能加任何解釋、標註或括號。幣別符號（如「$」）請保留原樣。${industryPrompt}`;
     } else {
-      systemPrompt = `你是一位台灣專業人工翻譯員，${industryPrompt}請將下列句子忠實翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，請**不要更改任何幣別符號**，例如「$」請保留原樣。只要回覆翻譯結果，不要加任何解釋、說明、標註或符號。`;
+      systemPrompt = `你是一位專業人工翻譯員。請把下列每一行都強制且忠實地翻譯成【${SUPPORTED_LANGS[targetLang] || targetLang}】，不可以混用任何原文字或華語。不論內容為人名、代號、職稱、分工、簡稱，都要翻譯或音譯，若無標準譯名請用當地通用寫法或音譯（不可留原文）。原有換行、標點、格式均須保留。不加說明、註記或括號。幣別符號（如「$」）要保留。${industryPrompt}`;
     }
   }
 
@@ -278,7 +199,7 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
 
   try {
     const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-5-mini",
+      model: "gpt-4o-mini",
       messages: [
         { role: "system", content: "你只要回覆翻譯後的文字，請勿加上任何解釋、說明、標註或符號。" },
         { role: "system", content: systemPrompt },
@@ -291,29 +212,28 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
     let out = res.data.choices[0].message.content.trim();
     out = out.split('\n').map(line => line.trim()).filter(line => line).join('\n');
 
-    // 優化的翻譯結果判斷邏輯
     if (targetLang === "zh-TW") {
-      // 如果回傳結果和輸入一模一樣，表示翻譯服務認為不需翻譯
-      // 但我們容許最多重試3次，用更強提示詞強制翻譯
       if (out === text.trim()) {
         if (retry < 3) {
-          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
+          const strongPrompt = `
+你是一位台灣專業人工翻譯員，請嚴格將下列句子每一行完整且忠實翻譯成繁體中文。不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部都必須翻譯或音譯，不准照抄留用任何原文（包括拼音或拉丁字母）。標點、數字請依原本格式保留，不加任何解釋、說明或符號。遇難譯詞請用國內常通用法或漢字音譯。${industryPrompt}
+          `.replace(/\s+/g, ' ');
           return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
         } else {
           out = "（翻譯異常，請稍後再試）";
         }
       }
-      // 如果沒有中文字，也視為失敗，因為翻成繁中應該要有中文
       else if (!/[\u4e00-\u9fff]/.test(out)) {
         if (retry < 3) {
-          const strongPrompt = `你是一位台灣專業人工翻譯員，請**絕對**將下列句子完整且忠實地翻譯成繁體中文，**不要保留任何原文**，不要加任何解釋、說明、標註或符號。${industryPrompt}`;
+          const strongPrompt = `
+你是一位台灣專業人工翻譯員，請嚴格將下列句子每一行完整且忠實翻譯成繁體中文。不論原文是什麼（即使是人名、代號、職稱、分工、簡稱），全部都必須翻譯或音譯，不准照抄留用任何原文（包括拼音或拉丁字母）。標點、數字請依原本格式保留，不加任何解釋、說明或符號。遇難譯詞請用國內常通用法或漢字音譯。${industryPrompt}
+          `.replace(/\s+/g, ' ');
           return translateWithChatGPT(text, targetLang, gid, retry + 1, strongPrompt);
         } else {
           out = "（翻譯異常，請稍後再試）";
         }
       }
     }
-
     translationCache.set(cacheKey, out);
     return out;
   } catch (e) {
@@ -321,12 +241,10 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
       await new Promise(r => setTimeout(r, (retry + 1) * 5000));
       return translateWithChatGPT(text, targetLang, gid, retry + 1, customPrompt);
     }
-    //console.error("翻譯失敗:", e.message, e.response?.data || "");
     return "（翻譯暫時不可用）";
   }
 };
 
-// === Firestore 資料處理 ===
 async function commitBatchInChunks(batchOps, db, chunkSize = 400) {
   const chunks = [];
   for (let i = 0; i < batchOps.length; i += chunkSize) {
@@ -344,13 +262,11 @@ async function commitBatchInChunks(batchOps, db, chunkSize = 400) {
         await batch.commit();
         break;
       } catch (e) {
-        //console.error(`批次寫入失敗 (重試 ${retryCount + 1}/3):`, e);
         retryCount++;
         await new Promise(r => setTimeout(r, (retryCount + 1) * 1000));
       }
     }
     if (retryCount === 3) {
-      //console.error("批次寫入最終失敗，放棄", chunk);
       throw new Error(i18n['zh-TW'].databaseSyncError);
     }
     await new Promise(r => setTimeout(r, 500));
@@ -414,77 +330,143 @@ const saveIndustry = async () => {
   }
 };
 
-// === 發送語言設定選單 ===
+// === 科技風格：發送語言設定選單 ===
 const sendMenu = async (gid, retry = 0) => {
-  const langButtons = Object.entries(SUPPORTED_LANGS)
+  // 準備語言按鈕資料
+  const langItems = Object.entries(SUPPORTED_LANGS)
     .filter(([code]) => code !== "zh-TW")
     .map(([code, label]) => ({
+      code,
+      label,
+      icon: LANG_ICONS[code] || ""
+    }));
+
+  // 將按鈕分組，每組2個，製作成 Flex Grid 樣式
+  const langRows = [];
+  for (let i = 0; i < langItems.length; i += 2) {
+    const rowContents = [];
+    const item1 = langItems[i];
+    rowContents.push({
       type: "button",
       action: {
         type: "postback",
-        label: `${LANG_ICONS[code] || ""} ${label}`,
-        data: `action=set_lang&code=${code}`
+        label: `${item1.icon} ${item1.label}`,
+        data: `action=set_lang&code=${item1.code}`
       },
-      style: "primary",
-      color: "#3b82f6",
-      margin: "md",
-      height: "sm"
-    }));
-  langButtons.push({
-    type: "button",
-    action: { type: "postback", label: "❌ 取消選擇", data: "action=set_lang&code=cancel" },
-    style: "secondary",
-    color: "#ef4444",
-    margin: "md",
-    height: "sm"
-  });
-  langButtons.push({
-    type: "button",
-    action: { type: "postback", label: "🏭 設定行業別", data: "action=show_industry_menu" },
-    style: "secondary",
-    color: "#10b981",
-    margin: "md",
-    height: "sm"
-  });
+      style: "primary", // 改為 primary 讓字變白
+      color: "#1E293B", // 深灰藍背景
+      height: "sm",
+      flex: 1,
+      margin: "sm"
+    });
+
+    if (i + 1 < langItems.length) {
+      const item2 = langItems[i+1];
+      rowContents.push({
+        type: "button",
+        action: {
+          type: "postback",
+          label: `${item2.icon} ${item2.label}`,
+          data: `action=set_lang&code=${item2.code}`
+        },
+        style: "primary", // 改為 primary 讓字變白
+        color: "#1E293B", // 深灰藍背景
+        height: "sm",
+        flex: 1,
+        margin: "sm"
+      });
+    } else {
+       // 補一個 filler 佔位，避免 400 錯誤
+       rowContents.push({ type: "filler", flex: 1 });
+    }
+
+    langRows.push({
+      type: "box",
+      layout: "horizontal",
+      contents: rowContents,
+      margin: "md"
+    });
+  }
+
   const msg = {
     type: "flex",
-    altText: "語言設定選單",
+    altText: "語言設定控制台",
     contents: {
       type: "bubble",
       size: "mega",
       body: {
         type: "box",
         layout: "vertical",
-        spacing: "lg",
+        backgroundColor: "#0F172A", // 深色科技背景 (Slate 900)
         paddingAll: "20px",
         contents: [
+          // Header 裝飾
+          {
+            type: "box",
+            layout: "horizontal",
+            contents: [
+              { type: "text", text: "⚙️ SYSTEM CONFIG", color: "#38BDF8", weight: "bold", size: "xs", flex: 1 },
+              { type: "text", text: "v2.0", color: "#64748B", size: "xs", align: "end" }
+            ],
+            paddingBottom: "md"
+          },
+          { type: "separator", color: "#334155" },
+          // 主標題
           {
             type: "text",
             text: i18n['zh-TW'].menuTitle,
             weight: "bold",
             size: "xl",
-            align: "center",
-            color: "#1d4ed8"
+            color: "#F8FAFC", // 亮白
+            margin: "md",
+            align: "center"
           },
           {
-            type: "text",
-            text: "請點擊下方按鈕切換語言，或取消全部。",
-            size: "sm",
-            align: "center",
-            margin: "md"
+             type: "text",
+             text: "TARGET LANGUAGE SELECTOR",
+             weight: "bold",
+             size: "xxs",
+             color: "#38BDF8", // 螢光藍
+             margin: "xs",
+             align: "center"
           },
-          { type: "separator", margin: "md" },
+          // 語言按鈕區域
           {
             type: "box",
             layout: "vertical",
-            spacing: "sm",
             margin: "lg",
-            contents: langButtons
+            contents: langRows
+          },
+          // 下方功能區
+          { type: "separator", color: "#334155", margin: "xl" },
+          {
+            type: "text",
+            text: "ADVANCED SETTINGS",
+            color: "#64748B",
+            size: "xxs",
+            margin: "lg"
+          },
+          {
+            type: "button",
+            action: { type: "postback", label: "🏭 設定行業別 (INDUSTRY)", data: "action=show_industry_menu" },
+            style: "primary",
+            color: "#10B981", // 科技綠
+            margin: "md",
+            height: "sm"
+          },
+          {
+            type: "button",
+            action: { type: "postback", label: "❌ 清除設定 (RESET)", data: "action=set_lang&code=cancel" },
+            style: "secondary",
+            color: "#EF4444", // 警告紅
+            margin: "sm",
+            height: "sm"
           }
         ]
       }
     }
   };
+
   try {
     await client.pushMessage(gid, msg);
     console.log(`sendMenu: 成功推送語言選單給群組 ${gid}`);
@@ -497,31 +479,65 @@ const sendMenu = async (gid, retry = 0) => {
   }
 };
 
-// === 建立行業別選單 ===
+// === 科技風格：建立行業別選單 ===
 function buildIndustryMenu() {
+  // 將行業列表改為垂直列表 (Vertical List)，不分組
+  const industryButtons = INDUSTRY_LIST.map(ind => ({
+    type: "button",
+    action: { type: "postback", label: ind, data: `action=set_industry&industry=${encodeURIComponent(ind)}` },
+    style: "primary", // 改為 primary 讓字變白
+    color: "#334155", // Slate 700
+    height: "sm",
+    margin: "xs"
+  }));
+
   return {
     type: "flex",
-    altText: "請選擇行業別",
+    altText: "行業模式選擇",
     contents: {
       type: "bubble",
       size: "mega",
       body: {
         type: "box",
         layout: "vertical",
-        spacing: "md",
+        backgroundColor: "#0F172A", // 深色科技背景
+        paddingAll: "20px",
         contents: [
-          { type: "text", text: "🏭 請選擇行業別", weight: "bold", size: "lg", align: "center" },
-          ...INDUSTRY_LIST.map(ind => ({
-            type: "button",
-            action: { type: "postback", label: ind, data: `action=set_industry&industry=${encodeURIComponent(ind)}` },
-            style: "primary",
+          // Header
+          {
+             type: "text", 
+             text: "INDUSTRY MODE", 
+             color: "#38BDF8", 
+             weight: "bold", 
+             size: "xs"
+          },
+          {
+            type: "text",
+            text: "選擇行業類別",
+            weight: "bold",
+            size: "xl",
+            color: "#F8FAFC",
             margin: "sm"
-          })),
+          },
+          { type: "separator", color: "#334155", margin: "md" },
+          
+          // 列表區域 (直接放入所有按鈕，垂直排列)
+          {
+            type: "box",
+            layout: "vertical",
+            margin: "lg",
+            contents: industryButtons
+          },
+
+          // Footer
+          { type: "separator", color: "#334155", margin: "xl" },
           {
             type: "button",
-            action: { type: "postback", label: "❌ 不設定/清除行業別", data: "action=set_industry&industry=" },
+            action: { type: "postback", label: "🚫 清除設定 / 不指定", data: "action=set_industry&industry=" },
             style: "secondary",
-            margin: "md"
+            color: "#EF4444",
+            margin: "lg",
+            height: "sm"
           }
         ]
       }
@@ -776,17 +792,6 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                     outLine += beforeUrl;
                   } else {
                     let toTranslate = beforeUrl.trim();
-               //     if (code === "zh-TW" && detectLang(toTranslate) === "th") {
-                 //     toTranslate = preprocessThaiWorkPhrase(toTranslate);
-
-                      // 可以加進階判斷 smartPreprocess
-               //       if (/ทำโอ/.test(toTranslate)) {
-               //         const smartZh = await smartPreprocess(toTranslate, "th");
-                        if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                          toTranslate = smartZh.trim();
-                        }
-                      // }
-                 //   }
                     const tr = await translateWithChatGPT(toTranslate, code, gid);
                     outLine += tr.trim();
                   }
@@ -801,15 +806,6 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
                 if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
                   outLine += afterLastUrl;
                 } else {
-                //  if (code === "zh-TW" && detectLang(toTranslate) === "th") {
-                 //   toTranslate = preprocessThaiWorkPhrase(toTranslate);
-                 //   if (/ทำโอ/.test(toTranslate)) {
-                 //     const smartZh = await smartPreprocess(toTranslate, "th");
-                 //     if (/[\u4e00-\u9fff]/.test(smartZh)) {
-                 //       toTranslate = smartZh.trim();
-                 //     }
-                 //   }
-                 // }
                   const tr = await translateWithChatGPT(toTranslate, code, gid);
                   outLine += tr.trim();
                 }
@@ -933,78 +929,3 @@ app.listen(PORT, async () => {
     process.exit(1);
   }
 });
-
-// === 定時任務 ===
-//const BATCH_SIZE = 10;      // 每批群組數量
-//const BATCH_INTERVAL = 90000; // 批次間隔時間，單位毫秒（1分鐘）
-
-//cron.schedule("0 17 * * *", async () => {
-//  const today = new Date().toLocaleDateString("zh-TW", {
- //   timeZone: "Asia/Taipei",
-//    year: "numeric",
-//    month: "2-digit",
-//    day: "2-digit"
-//  }).replace(/\//g, "-");
-
-//  console.log(`開始推播 ${today} 文宣圖片到 ${groupLang.size} 個群組`);
-
-//  let successCount = 0;
-//  let failCount = 0;
-
-  // 將群組ID陣列化
-//  const groupIds = Array.from(groupLang.keys());
-
-  // 分批處理
-//  for (let batchStart = 0; batchStart < groupIds.length; batchStart += BATCH_SIZE) {
-//    const batch = groupIds.slice(batchStart, batchStart + BATCH_SIZE);
-
-//    console.log(`開始推播第 ${Math.floor(batchStart / BATCH_SIZE) + 1} 批，共 ${batch.length} 個群組`);
-
-//    for (const gid of batch) {
-//      try {
-//        const imgs = await fetchImageUrlsByDate(gid, today);
-
-//        if (!imgs || imgs.length === 0) {
- //         console.warn(`⚠️ 群組 ${gid} 今日無可推播圖片`);
-//          continue;
-  //      }
-
-   //     for (let i = 0; i < imgs.length; i++) {
-  //        const url = imgs[i];
-  //        try {
- //           await client.pushMessage(gid, {
-   //           type: "image",
-   //           originalContentUrl: url,
-   //           previewImageUrl: url
-  //          });
-    //        console.log(`✅ 群組 ${gid} 推播圖片成功：${url}`);
-//
-   //         if (i < imgs.length - 1) {
-   //           await new Promise(resolve => setTimeout(resolve,1000)); // 圖片間隔500ms
-   //         }
-   //       } catch (e) {
-   //         console.error(`❌ 群組 ${gid} 推播圖片失敗: ${url}`, e.message);
-  //          failCount++;
-  //        }
-  //      }
-
-//        successCount++;
- //       console.log(`✅ 群組 ${gid} 推播完成`);
-
-  //      await new Promise(resolve => setTimeout(resolve, 3000)); // 群組間隔2秒
-
- //     } catch (e) {
- //       console.error(`❌ 群組 ${gid} 推播失敗:`, e.message);
- //       failCount++;
-//      }
-//    }
-
-    // 批次間隔
-//    if (batchStart + BATCH_SIZE < groupIds.length) {
-//      console.log(`等待 ${BATCH_INTERVAL/1000} 秒後開始下一批推播...`);
-//      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL));
-//    }
-//  }
-
-//  console.log(`📊 推播統計：成功 ${successCount} 個群組，失敗 ${failCount} 個群組`);
-// }, { timezone: "Asia/Taipei" });
