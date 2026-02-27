@@ -126,7 +126,23 @@ if (/[a-zA-Z]/.test(text)) return 'en';
 function hasChinese(txt) {
   return /[\u4e00-\u9fff]/.test(txt);
 }
+function isOnlyEmojiOrWhitespace(txt) {
+  if (!txt) return true;
 
+  // 新增：允許一個或多個括號 emoji 描述，例如 (雙手合十)(雙手合十) 或 （OK）（讚）
+  if (/^[\s（(]*([\u4e00-\u9fff\w\s]+)[）)]*$/.test(txt.trim()) === false) {
+    // 再用更精確的方式：整段只由「括號描述」組成
+  }
+  
+  // ✅ 正確做法：移除所有括號描述後，剩下是否為空
+  const stripped = txt.replace(/[（(][\u4e00-\u9fff\w\s]+[）)]/g, "").trim();
+  if (!stripped) return true;
+
+  let s = stripped.replace(/[\s.,!?，。？！、:：;；"'""''（）【】《》\[\]()]/g, "");
+  s = s.replace(/\uFE0F/g, "").replace(/\u200D/g, "");
+  if (!s) return true;
+  return /^\p{Extended_Pictographic}+$/u.test(s);
+}
 const isSymbolOrNum = txt =>
   /^[\d\s.,!?，。？！、：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
@@ -186,6 +202,9 @@ const translateWithChatGPT = async (text, targetLang, gid = null, retry = 0, cus
     `如果遇到專業詞彙，切勿用日常語言直譯，應根據行業上下文調整詞彙、判斷。` +
     `所有翻譯結果請保留專業性，不添加解釋。`
   : "";
+  if (isOnlyEmojiOrWhitespace(text)) {
+    return text;
+  }
   let systemPrompt = customPrompt;
 
   if (!systemPrompt) {
@@ -373,18 +392,24 @@ if (targetLangs.length === 0) return;
   ]).catch(e => {
     console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
   });
+const LANG_LABELS = {
+  "zh-TW": "🇹🇼",
+  vi: "🇻🇳",
+  id: "🇮🇩",
+  th: "🇹🇭",
+  en: "🇬🇧"
+};
 
-  let replyText = "";
-  for (const code of allNeededLangs) {
-    if (langOutputs[code] && langOutputs[code].length) {
-      // 🔥 過濾掉 undefined（失敗的翻譯）
-      const validLines = langOutputs[code].filter(line => line);
-      if (validLines.length > 0) {
-        replyText += `${validLines.join("\n")}\n\n`;
-      }
+let replyText = "";
+for (const code of allNeededLangs) {
+  if (langOutputs[code] && langOutputs[code].length) {
+    const validLines = langOutputs[code].filter(line => line);
+    if (validLines.length > 0) {
+      const label = LANG_LABELS[code] || code;
+      replyText += `${label}：\n${validLines.join("\n")}\n\n`;
     }
   }
-  if (!replyText) replyText = "(尚無翻譯結果)";
+}  if (!replyText) replyText = "(尚無翻譯結果)";
 
   const userName = await client.getGroupMemberProfile(gid, uid)
     .then(p => p.displayName)
@@ -393,14 +418,14 @@ if (targetLangs.length === 0) return;
   try {
     await client.replyMessage(replyToken, {
       type: "text",
-      text: `【${userName}】說：\n${replyText.trim()}`
+      text: `【${userName}】說：\n\n${replyText.trim()}`
     });
     console.log(`✅ 翻譯完成並使用 replyMessage 回覆`);
   } catch (e) {
     console.warn("⚠️ replyToken 過期，改用 pushMessage:", e.message);
     await client.pushMessage(gid, {
       type: "text",
-      text: `【${userName}】說：\n${replyText.trim()}`
+      text: `【${userName}】說：\n\n${replyText.trim()}`
     });
   }
 }
@@ -804,6 +829,9 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
       }
 
       // === 🔥 優化後的文字訊息翻譯處理 ===
+      if (event.type === "message" && gid && event.message?.type !== "text") {
+         return;
+      }
       if (event.type === "message" && event.message.type === "text" && gid) {
         const text = event.message.text.trim();
 
@@ -881,13 +909,25 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         // 🔥 翻譯處理：改為背景執行
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
+        if (isOnlyEmojiOrWhitespace(textForLangDetect)) {
+            return;
+        }
+
+       // 整段訊息只有網址，跳過翻譯
+       if (/^(https?:\/\/[^\s]+\s*)+$/.test(textForLangDetect)) {
+          console.log("[info] 訊息為純網址，跳過翻譯");
+          return;
+        }
+        if (/^\([\u4e00-\u9fff\w\s]+\)$/.test(textForLangDetect)) {
+           console.log("[info] 訊息為 emoji 描述括號格式，跳過翻譯");
+           return;
+        }
         //const isChineseInput = hasChinese(textForLangDetect);
         const sourceLang = detectLang(textForLangDetect);
         const isChineseInput = (sourceLang === "zh-TW");
         const rawLines = masked.split(/\r?\n/).filter(l => l.trim());
         const set = groupLang.get(gid) || new Set();
         const skipTranslatePattern = /^([#]?[A-Z]\d(\s?[A-Z]\d)*|\w{1,2}\s?[A-Z]?\d{0,2})$/i;
-        
         if (skipTranslatePattern.test(textForLangDetect)) {
            console.log("[info] 訊息符合跳過翻譯格式，跳過翻譯");
            return;
