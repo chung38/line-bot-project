@@ -108,38 +108,33 @@ const i18n = {
 
 // === 判斷函式 ===
 const detectLang = (text) => {
-  // 1. 中文判斷
   const totalLen = text.length;
+
+  // 1. 中文判斷（比例 > 30% 或絕對值 >= 2）
   const chineseLen = (text.match(/[\u4e00-\u9fff]/g) || []).length;
-  if (totalLen > 0 && chineseLen / totalLen > 0.3) return 'zh-TW';
+  if (totalLen > 0 && (chineseLen / totalLen > 0.3 || chineseLen >= 2)) return 'zh-TW';
 
-  // 2. 泰文判斷
-  if (/[\u0E00-\u0E7F]/.test(text)) return 'th';
+  // 2. 泰文判斷（改為比例，避免夾雜少量泰文被誤判）
+  const thaiLen = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
+  if (totalLen > 0 && thaiLen / totalLen > 0.3) return 'th';
 
-  // 3. 印尼文判斷
-  // (A) 高頻詞與常見口語
+  // 3. 印尼文判斷（不變）
   if (/\b(ini|itu|dan|yang|untuk|dengan|tidak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|datang|pulang|izin|sakit|bos|iya|terima|kasih|selamat|nggak|cuti|lembur|barusan|sopir|telp|telepon|makan|tidur|bangun|pergi|sudah|belum|juga|tapi|sama|saya|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee)\b/i.test(text)) {
     return 'id';
   }
-  // (B) 印尼文字首字根
   if (/\b(di|ke|me|ber|ter)\w+\b/i.test(text)) return 'id';
-  // (C) 印尼文專屬後綴 -nya / -kan / -lah / -pun
   if (/\w+(nya|kan|lah|pun)\b/i.test(text)) return 'id';
 
-  // 4. 越南文判斷
-  // (A) 常見高頻詞（無變音符號短句）
+  // 4. 越南文判斷（不變）
   if (/\b(anh|chi|em|oi|roi|duoc|khong|ko|lam|sang|chieu|toi|mai|hom|nay|vang|da|xin|cam|on|biet|viec|ngay|gio|nghi|tang|ca)\b/i.test(text)) {
     return 'vi';
   }
-  // (B) 帶有越南文變音符號
   if (/[\u0102-\u01B0\u1EA0-\u1EF9]/.test(text)) return 'vi';
 
-  // 5. 英文（兜底）
+  // 5. 英文兜底
   if (/[a-zA-Z]/.test(text)) return 'en';
-
   return 'en';
 };
-
 function hasChinese(txt) {
   return /[\u4e00-\u9fff]/.test(txt);
 }
@@ -149,8 +144,7 @@ function isOnlyEmojiOrWhitespace(txt) {
   // 新增：允許一個或多個括號 emoji 描述，例如 (雙手合十)(雙手合十) 或 （OK）（讚）
   if (/^[\s（(]*([\u4e00-\u9fff\w\s]+)[）)]*$/.test(txt.trim()) === false) {
     // 再用更精確的方式：整段只由「括號描述」組成
-  }
-  
+  } 
   // ✅ 正確做法：移除所有括號描述後，剩下是否為空
   const stripped = txt.replace(/[（(][\u4e00-\u9fff\w\s]+[）)]/g, "").trim();
   if (!stripped) return true;
@@ -161,20 +155,27 @@ function isOnlyEmojiOrWhitespace(txt) {
   return /^\p{Extended_Pictographic}+$/u.test(s);
 }
 const isSymbolOrNum = txt =>
-  /^[\d\s.,!?，。？！、：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
+  /^[\d\s.,!?，。？！、:：；"'""''（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 
 function extractMentionsFromLineMessage(message) {
   let masked = message.text;
   const segments = [];
 
-  if (message.mentioned?.mentionees?.length) {
-    const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
-    mentionees.forEach((m, i) => {
-      const key = `__MENTION_${i}__`;
-      segments.unshift({ key, text: message.text.substr(m.index, m.length) });
-      masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
-    });
-  }
+if (message.mentioned?.mentionees?.length) {
+  const mentionees = [...message.mentioned.mentionees].sort((a, b) => b.index - a.index);
+  mentionees.forEach((m, i) => {
+    const key = `__MENTION_${i}__`;
+
+    // ✅ 補上這行，@All 也要正確 mask
+    const mentionText = m.type === "all"
+      ? "@All"
+      : message.text.substr(m.index, m.length);
+
+    segments.unshift({ key, text: mentionText });
+    masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
+  });
+}
+
 
   const manualRegex = /@([^\s@，,。、:：;；!?！()\[\]{}【】（）]+)/g;
   let idx = segments.length;
@@ -926,9 +927,15 @@ app.post("/webhook", limiter, middleware(lineConfig), async (req, res) => {
         // 🔥 翻譯處理：改為背景執行
         const { masked, segments } = extractMentionsFromLineMessage(event.message);
         const textForLangDetect = masked.replace(/__MENTION_\d+__/g, '').trim();
+      
         if (isOnlyEmojiOrWhitespace(textForLangDetect)) {
             return;
         }
+        if (isSymbolOrNum(textForLangDetect.replace(/\n/g, ' '))) {
+            console.log("[info] mention 後只剩數字/符號，跳過翻譯");
+            return;
+        }
+        
 
        // 整段訊息只有網址，跳過翻譯
        if (/^(https?:\/\/[^\s]+\s*)+$/.test(textForLangDetect)) {
