@@ -1,6 +1,7 @@
 const { api, toast, escapeHtml } = window.AdminCommon;
 
 let groupItems = [];
+let blockedGroupItems = [];
 let industries = [];
 let editingGid = null;
 let selectedGids = new Set();
@@ -51,6 +52,16 @@ async function loadGroups() {
   selectedGids = new Set([...selectedGids].filter(gid => validGids.has(gid)));
 
   renderGroups();
+}
+
+async function loadBlockedGroups() {
+  try {
+    const data = await api("/admin/groups-blocked");
+    blockedGroupItems = data.items || [];
+  } catch (e) {
+    blockedGroupItems = [];
+  }
+  renderBlockedGroups();
 }
 
 function getFilteredGroups() {
@@ -152,6 +163,38 @@ function renderGroups() {
   updateSelectedSummary(filtered);
 }
 
+function renderBlockedGroups() {
+  const el = document.getElementById("blockedGroupList");
+  if (!el) return;
+
+  const html = blockedGroupItems.length
+    ? blockedGroupItems.map(item => {
+        const deletedAt = item.deletedAt?._seconds
+          ? new Date(item.deletedAt._seconds * 1000).toLocaleString("zh-TW")
+          : "未知";
+        return `
+          <div class="group-card" style="border-left: 3px solid #ef4444;">
+            <div class="group-card-head">
+              <div>
+                <div class="group-title" style="color:#ef4444;">⛔ 已封鎖</div>
+                <div class="group-id">群組ID：${escapeHtml(item.gid)}</div>
+              </div>
+              <div class="group-actions">
+                <button onclick="restoreGroup('${escapeHtml(item.gid)}')" class="btn-primary">♻️ 恢復群組</button>
+              </div>
+            </div>
+            <div class="group-row">
+              <span class="label">刪除時間</span>
+              <div>${escapeHtml(deletedAt)}</div>
+            </div>
+          </div>
+        `;
+      }).join("")
+    : `<div class="empty">目前沒有被刪除的群組</div>`;
+
+  el.innerHTML = html;
+}
+
 function fillForm(item) {
   editingGid = item.gid;
   document.getElementById("gid").value = item.gid;
@@ -187,7 +230,7 @@ async function saveGroupSettings(e) {
 }
 
 async function deleteGroupSettings(gid) {
-  if (!confirm(`確定刪除 ${gid} 的整組設定？`)) return;
+  if (!confirm(`確定刪除 ${gid} 的整組設定？刪除後群組會進入封鎖清單，可從下方「已刪除群組」恢復。`)) return;
 
   try {
     await api(`/admin/groups/${encodeURIComponent(gid)}/settings`, {
@@ -197,8 +240,23 @@ async function deleteGroupSettings(gid) {
     toast("已刪除群組設定");
     if (editingGid === gid) resetForm();
     await loadGroups();
+    await loadBlockedGroups();
   } catch (e) {
     toast(`刪除失敗：${e.message}`, true);
+  }
+}
+
+async function restoreGroup(gid) {
+  if (!confirm(`確定要恢復群組 ${gid} 嗎？\n這會解除封鎖，讓群組可重新綁定，但不會還原原本設定。`)) return;
+
+  try {
+    await api(`/admin/groups/${encodeURIComponent(gid)}/blocked`, {
+      method: "DELETE"
+    });
+    toast("✅ 已解除封鎖，群組可重新綁定");
+    await loadBlockedGroups();
+  } catch (e) {
+    toast(`恢復失敗：${e.message}`, true);
   }
 }
 
@@ -248,6 +306,7 @@ async function batchDeleteSelectedGroups() {
   }
 
   await loadGroups();
+  await loadBlockedGroups();
 
   if (failed === 0) {
     toast(`批次刪除完成，共 ${success} 筆`);
@@ -262,6 +321,7 @@ window.editGroup = gid => {
 };
 
 window.deleteGroupSettings = deleteGroupSettings;
+window.restoreGroup = restoreGroup;
 window.sendMenuToGroup = sendMenuToGroup;
 window.toggleGroupSelection = toggleGroupSelection;
 
@@ -289,6 +349,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await loadConstants();
     await loadGroups();
+    await loadBlockedGroups();
   } catch (e) {
     toast(`初始化失敗：${e.message}`, true);
   }
