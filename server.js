@@ -1629,7 +1629,20 @@ adminRouter.delete("/groups/:gid/settings", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
-
+adminRouter.get("/groups-blocked", async (req, res) => {
+  try {
+    const snapshot = await db.collection("deletedGroups")
+      .orderBy("deletedAt", "desc")
+      .get();
+    const items = snapshot.docs.map(doc => ({
+      gid: doc.id,
+      ...doc.data()
+    }));
+    res.json({ success: true, items });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 // ✅ 後台手動解除封鎖（讓群組可以重新綁定）
 adminRouter.delete("/groups/:gid/blocked", async (req, res) => {
   try {
