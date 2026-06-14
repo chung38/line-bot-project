@@ -2090,7 +2090,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+      
         return null;
       }
 
@@ -2131,7 +2131,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+       
         return null;
       }
 
@@ -2148,7 +2148,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        
         return null;
       }
 
@@ -2185,7 +2185,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        
         return null;
       }
 
