@@ -230,7 +230,6 @@ function isPureChineseMessage(text = "") {
   return chineseLen >= 1 && chineseRatio >= 0.6 && foreignLen === 0
 ;
 }
-
 function extractMentionsFromLineMessage(message) {
   let masked = message.text || "";
   const segments = [];
@@ -241,7 +240,7 @@ function extractMentionsFromLineMessage(message) {
     mentionees.forEach((m, i) => {
       const key = `__MENTION_${i}__`;
       const mentionText = m.type === "all" ? "@All" : masked.substr(m.index, m.length);
-      segments.unshift({ key, text: mentionText });
+      segments.push({ key, text: mentionText });  // ✅ 改 unshift → push
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
 
@@ -270,6 +269,7 @@ function extractMentionsFromLineMessage(message) {
   newMasked += masked.slice(last);
   return { masked: newMasked, segments };
 }
+
 
 function restoreMentions(text, segments) {
   let restored = text;
