@@ -251,7 +251,8 @@ function extractMentionsFromLineMessage(message) {
       const key = `__MENTION_${i}__`;
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
-
+    console.log("🔍 masked after replace:", masked);
+    console.log("🔍 segments:", segments);
     return { masked, segments };
   }
 
