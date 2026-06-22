@@ -267,10 +267,8 @@ function extractMentionsFromLineMessage(message) {
     const mentionText = m[0];
     const key = `__MENTION_${idx}__`;
     segments.push({ key, text: mentionText });
-    newMasked += masked.slice(last, m.index) + key;
-    last = m.index + mentionText.length;
-    newMasked += " ";
-    if (masked[last] === " ") last++;
+newMasked += masked.slice(last, m.index) + key;
+last = m.index + mentionText.length;
     idx++;
   }
 
@@ -1125,26 +1123,30 @@ async function translateLineSegments(line, targetLang, gid, segments) {
     let urlMatch;
 
     while ((urlMatch = urlRegex.exec(seg.text)) !== null) {
-      const beforeUrl = seg.text.slice(lastIdx, urlMatch.index);
-      if (beforeUrl.trim()) {
-        if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl)) {
-          outLine += beforeUrl;
-        } else {
-          outLine += (await translateWithChatGPT(beforeUrl.trim(), targetLang, gid)).trim();
-        }
-      }
-      outLine += urlMatch[0];
-      lastIdx = urlMatch.index + urlMatch[0].length;
+const beforeUrl = seg.text.slice(lastIdx, urlMatch.index);
+if (beforeUrl.trim()) {
+  const leadingSpace = beforeUrl.match(/^\s*/)[0];
+  const trailingSpace = beforeUrl.match(/\s*$/)[0];
+  if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl.trim())) {
+    outLine += beforeUrl;
+  } else {
+    outLine += leadingSpace + (await translateWithChatGPT(beforeUrl.trim(), targetLang, gid)).trim() + trailingSpace;
+  }
+}
+outLine += urlMatch[0];
+lastIdx = urlMatch.index + urlMatch[0].length;
     }
 
-    const afterLastUrl = seg.text.slice(lastIdx);
-    if (afterLastUrl.trim()) {
-      if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl)) {
-        outLine += afterLastUrl;
-      } else {
-        outLine += (await translateWithChatGPT(afterLastUrl.trim(), targetLang, gid)).trim();
-      }
-    }
+const afterLastUrl = seg.text.slice(lastIdx);
+if (afterLastUrl.trim()) {
+  const leadingSpace = afterLastUrl.match(/^\s*/)[0];
+  const trailingSpace = afterLastUrl.match(/\s*$/)[0];
+  if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl.trim())) {
+    outLine += afterLastUrl;
+  } else {
+    outLine += leadingSpace + (await translateWithChatGPT(afterLastUrl.trim(), targetLang, gid)).trim() + trailingSpace;
+  }
+}
   }
 
   return restoreMentions(outLine, segments);
@@ -1212,9 +1214,9 @@ if (!isChineseDominant) {
 
   let replyText = "";
   for (const code of targetLangs) {
-    const lines = (langOutputs[code] || []).filter(
-      line => line !== undefined && line !== null && line !== ""
-    );
+const lines = (langOutputs[code] || []).filter(
+  line => line !== undefined && line !== null
+);
     if (!lines.length) continue;
     replyText += `${LANG_LABELS[code] || code}：\n${lines.join("\n")}\n\n`;
   }
@@ -2251,7 +2253,7 @@ async function handleEvent(event) {
     const useResult = await canUseGroup(gid);
     if (!useResult.ok) return null;
 
-    const rawLines = masked.split("\n").filter(l => l.trim());
+ const rawLines = masked.split("\n");
     if (!rawLines.length) return null;
 
     processTranslationInBackground(
