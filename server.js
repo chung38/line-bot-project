@@ -971,9 +971,7 @@ ${industryContext}
 使用自然、簡單、容易理解的工作用語。
 避免法律、公文、學術或過度正式的文字。
 
-7. 不要翻譯成日常生活語言。
-
-8. 保留原文中的：
+7. 保留原文中的：
 
 - 產品型號
 - 批號
@@ -988,16 +986,16 @@ ${industryContext}
 - 日期
 - 時間
 
-9. 人名、暱稱、群組稱呼、員工代號可保留原樣。
+8. 人名、暱稱、群組稱呼、員工代號可保留原樣。
 
-10. 保留原本換行格式。
+9. 保留原本換行格式。
 
-11. 不要加入任何說明、解釋、註解、括號補充或翻譯標籤。
+10. 不要加入任何說明、解釋、註解、括號補充或翻譯標籤。
 
-12. 只輸出翻譯結果。
+11. 只輸出翻譯結果。
 
 ${forceStrict && targetLang === "zh-TW"
-  ? "13. 必須輸出繁體中文，不可直接照抄原文。"
+  ? "12. 必須輸出繁體中文，不可直接照抄原文。"
   : ""}
 
 請翻譯成：${langLabel}
@@ -1022,6 +1020,7 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       {
         model: "gpt-4.1-mini",
         temperature: 0.1,
+        max_tokens: 1000,
         messages: [
           {
             role: "system",
@@ -2067,7 +2066,7 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
 });
 
 app.use("/admin", adminRouter);
-
+app.get("/ping", (req, res) => res.sendStatus(200));
 app.post(
   "/webhook",
   webhookLimiter,
