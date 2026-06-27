@@ -191,13 +191,15 @@ function detectLang(text) {
   }
 
   // 印尼文判斷（已加強）
-  if (
-    /\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|data|pulang|izin|sakit|bos|iya|terima|kasih|makasih|selamat|cuti|lembur|barusan|sopir|supir|telp|telepon|makan|tidur|bangun|pergi|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|pengen|bisa|harus|boleh|tolong|oke|okee|mungkin|gimana|begini|begitu)\b/i.test(cleaned) ||
-    /\b(di|ke|me|ber|ter)\s*\w+\b/i.test(cleaned) ||
-    /\w+(nya|nya?|kan|lah|pun)\b/i.test(cleaned)
-  ) {
-    return 'id';
-  }
+if (
+  chineseLen === 0 &&  // 沒有中文
+  latinLen > 3 &&      // 有足夠拉丁字母
+  (
+    /\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|pulang|izin|sakit|iya|terima|kasih|selamat|cuti|lembur|sudah|udah|belum|juga|tapi|saya|aku|kamu|bisa|harus|tolong|oke)\\b/i.test(cleaned) ||
+    /\w+(nya|kan|lah|pun)\b/i.test(cleaned)
+    // ← 移除 /\b(di|ke|me|ber|ter)\s*\w+\b/ 這條，太容易誤判英文
+  )
+) { return 'id'; }
 
   // 中文優先規則
   if (chineseLen >= 1 && foreignLen === 0) return 'zh-TW';
