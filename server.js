@@ -1093,6 +1093,10 @@ if (targetLang === "zh-TW") {
 }
 
 async function translateLineSegments(line, targetLang, gid, segments) {
+    const lineWithoutMentions = line.replace(/__MENTION_\d+__/g, "").trim();
+  if (!lineWithoutMentions) {
+    return restoreMentions(line, segments);  // 直接還原，不翻譯
+  }
   const segs = [];
   let lastIndex = 0;
   const mentionRegex = /__MENTION_\d+__/g;
