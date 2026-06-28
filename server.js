@@ -18,7 +18,9 @@ const requiredEnv = [
   "LINE_CHANNEL_ACCESS_TOKEN",
   "LINE_CHANNEL_SECRET",
   "OPENAI_API_KEY",
-  "FIREBASE_CONFIG"
+  "FIREBASE_CONFIG",
+  "ADMIN_USER",
+  "ADMIN_PASS"
 ];
 
 const missingEnv = requiredEnv.filter(v => !process.env[v]);
@@ -164,10 +166,9 @@ function normalizeTextForLangDetect(text = "") {
 }
 function detectLang(text) {
   const cleaned = normalizeTextForLangDetect(text);
-  if (!cleaned) return 'en';
+  if (!cleaned) return "en";
 
-  // 去掉數字再算長度
-  const noNumCleaned = cleaned.replace(/[0-9]/g, '');
+  const noNumCleaned = cleaned.replace(/[0-9]/g, "");
   const totalLen = noNumCleaned.length || 1;
 
   const chineseLen = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length;
@@ -179,39 +180,34 @@ function detectLang(text) {
   const thaiRatio = thaiLen / totalLen;
   const foreignLen = thaiLen + viCharLen + latinLen;
 
-  // 泰文判斷
-  if (thaiRatio > 0.2 || thaiLen >= 4) return 'th';
+  if (thaiRatio > 0.2 || thaiLen >= 4) return "th";
 
-  // 越南文判斷
   if (
     /\b(anh|chi|em|oi|roi|duoc|khong|ko|lam|sang|chieu|toi|mai|hom|nay|vang|da|xin|cam|on|biet|viec|ngay|gio|nghi|tang|ca)\b/i.test(cleaned) ||
     viCharLen >= 2
   ) {
-    return 'vi';
+    return "vi";
   }
 
-  // 印尼文判斷（已加強）
-if (
-  chineseLen === 0 &&  // 沒有中文
-  latinLen > 3 &&      // 有足夠拉丁字母
-  (
-    /\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|pulang|izin|sakit|iya|terima|kasih|selamat|cuti|lembur|sudah|udah|belum|juga|tapi|saya|aku|kamu|bisa|harus|tolong|oke)\\b/i.test(cleaned) ||
-    /\w+(nya|kan|lah|pun)\b/i.test(cleaned)
-    // ← 移除 /\b(di|ke|me|ber|ter)\s*\w+\b/ 這條，太容易誤判英文
-  )
-) { return 'id'; }
+  const idKeywordHits = (
+    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee|mungkin|gimana|begini|begitu)\b/gi) || []
+  ).length;
 
-  // 中文優先規則
-  if (chineseLen >= 1 && foreignLen === 0) return 'zh-TW';
-  if (chineseRatio >= 0.45 && chineseLen >= 1) return 'zh-TW';
+  const idSuffixHits = (
+    cleaned.match(/\b\w+(nya|kan|lah|pun)\b/gi) || []
+  ).length;
 
-  // 純符號或沒有拉丁字母時，當英文 fallback
-  if (latinLen === 0) return 'en';
+  if (chineseLen >= 1 && foreignLen === 0) return "zh-TW";
+  if (chineseRatio >= 0.45 && chineseLen >= 1) return "zh-TW";
 
-  // 有摻中文時偏向中文
-  if (chineseLen >= 1) return 'zh-TW';
+  if (idKeywordHits >= 2 || (idKeywordHits >= 1 && idSuffixHits >= 1)) {
+    return "id";
+  }
 
-  return 'en';
+  if (latinLen === 0) return "en";
+  if (chineseLen >= 1) return "zh-TW";
+
+  return "en";
 }
 
 
@@ -259,20 +255,21 @@ function extractMentionsFromLineMessage(message) {
   }
 
   // regex fallback（LINE API 沒有提供 mentionees 時才執行）
-  const manualRegex = /@([^\s@，,。、:：;；!?！()[\]{}【】（）]+)/g;
+ const manualRegex = /@([^@，,。、:：;；!?！()[\]{}【】（）\n]+)/g;
   let idx = 0;
   let newMasked = "";
   let last = 0;
   let m;
 
-  while ((m = manualRegex.exec(masked)) !== null) {
-    const mentionText = m[0];
-    const key = `__MENTION_${idx}__`;
-    segments.push({ key, text: mentionText });
-newMasked += masked.slice(last, m.index) + key;
-last = m.index + mentionText.length;
-    idx++;
-  }
+while ((m = manualRegex.exec(masked)) !== null) {
+  const rawMentionText = m[0];
+  const mentionText = rawMentionText.trimEnd();
+  const key = `__MENTION_${idx}__`;
+  segments.push({ key, text: mentionText });
+  newMasked += masked.slice(last, m.index) + key;
+  last = m.index + rawMentionText.length;
+  idx++;
+}
 
   newMasked += masked.slice(last);
   return { masked: newMasked, segments };
@@ -280,7 +277,7 @@ last = m.index + mentionText.length;
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
-    restored = restored.replace(new RegExp(seg.key, "g"), `${seg.text} `);
+    restored = restored.replace(new RegExp(seg.key, "g"), seg.text);
   });
   return restored;
 }
@@ -1157,17 +1154,17 @@ if (afterLastUrl.trim()) {
   return restoreMentions(outLine, segments);
 }
 
-async function processTranslationInBackground(replyToken,gid,uid,masked,segments,rawLines,langSet,sourceLang,ownerUserId) {
+async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, ownerUserId) {
   const allNeededLangs = new Set();
   const langOutputs = {};
-// ✅ 若整則訊息只有網址（無任何文字內容），直接跳過不翻譯
-const textOnly = masked
-  .replace(/__MENTION_\d+__/g, "")
-  .replace(/(https?:\/\/[^\s]+)/gi, "")
-  .replace(/\s+/g, "")   // ✅ 新增：去掉空白後再判斷
-  .trim();
 
-if (!textOnly) return;
+  const textOnly = masked
+    .replace(/__MENTION_\d+__/g, "")
+    .replace(/(https?:\/\/[^\s]+)/gi, "")
+    .replace(/\s+/g, "")
+    .trim();
+
+  if (!textOnly) return;
 
   const mergedText = rawLines.join("\n");
   const normalizedMergedText = normalizeTextForLangDetect(mergedText);
@@ -1177,56 +1174,67 @@ if (!textOnly) return;
   const viCharLen = (normalizedMergedText.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
   const latinLen = (normalizedMergedText.match(/[a-zA-Z]/g) || []).length;
 
+  const totalMeaningfulLen = normalizedMergedText.replace(/\s+/g, "").length || 1;
+  const chineseRatio = chineseLen / totalMeaningfulLen;
   const foreignLen = thaiLen + viCharLen + latinLen;
-const isChineseDominant = chineseLen > 0;
 
-if (!isChineseDominant) {
-  allNeededLangs.add("zh-TW");
-}
+  const isChineseDominant =
+    (chineseLen >= 2 && chineseRatio >= 0.45) ||
+    (chineseLen >= 4 && foreignLen === 0);
 
-[...langSet].forEach(code => {
-  if (code === "zh-TW") return;
-  if (!isChineseDominant && code === sourceLang) return; // 只有純外語才跳過
-  allNeededLangs.add(code);
-});
+  if (!isChineseDominant) {
+    allNeededLangs.add("zh-TW");
+  }
+
+  [...langSet].forEach(code => {
+    if (code === "zh-TW") return;
+    if (!isChineseDominant && code === sourceLang) return;
+    allNeededLangs.add(code);
+  });
 
   const targetLangs = [...allNeededLangs];
   if (!targetLangs.length) return;
 
-  targetLangs.forEach(code => {
-    langOutputs[code] = new Array(rawLines.length);
-  });
+  let translationTimedOut = false;
 
-  const tasks = [];
-  rawLines.forEach((line, lineIndex) => {
-    targetLangs.forEach(code => {
-      tasks.push(
-        translateLineSegments(line, code, gid, segments).then(result => {
-          langOutputs[code][lineIndex] = result;
-        })
-      );
-    });
+  const tasks = targetLangs.map(async code => {
+    try {
+      const result = await translateLineSegments(mergedText, code, gid, segments);
+      langOutputs[code] = result;
+    } catch (e) {
+      console.error(`❌ ${code} 翻譯失敗:`, e.message);
+      langOutputs[code] = "";
+    }
   });
 
   await Promise.race([
     Promise.allSettled(tasks),
     new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Translation timeout")), 25000)
+      setTimeout(() => {
+        translationTimedOut = true;
+        reject(new Error("Translation timeout"));
+      }, 25000)
     )
   ]).catch(e => {
     console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
   });
 
   let replyText = "";
+
   for (const code of targetLangs) {
-const lines = (langOutputs[code] || []).filter(
-  line => line !== undefined && line !== null
-);
-    if (!lines.length) continue;
-    replyText += `${LANG_LABELS[code] || code}：\n${lines.join("\n")}\n\n`;
+    const result = langOutputs[code];
+    if (!result || !result.trim()) {
+      replyText += `${LANG_LABELS[code] || code}：\n（翻譯失敗或逾時）\n\n`;
+      continue;
+    }
+    replyText += `${LANG_LABELS[code] || code}：\n${result.trim()}\n\n`;
   }
 
   if (!replyText.trim()) return;
+
+  if (translationTimedOut) {
+    replyText = `⚠️ 部分翻譯逾時，以下內容可能不完整。\n\n${replyText}`;
+  }
 
   const userName = await getGroupMemberDisplayName(gid, uid);
   await safeReplyOrPush(replyToken, gid, `【${userName}】說：\n${replyText.trim()}`);
