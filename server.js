@@ -229,49 +229,66 @@ function isPureChineseMessage(text = "") {
 ;
 }
 function extractMentionsFromLineMessage(message) {
-  let masked = message.text || "";
+  const originalText = message.text || "";
+  let masked = originalText;
   const segments = [];
-console.log("🔍 masked after replace:", masked);
-    console.log("🔍 segments:", segments);
+
+  console.log("🔎 message.text =", originalText);
+  console.log("🔎 message.mentioned =", JSON.stringify(message.mentioned || null));
+
+  // 1) 優先使用 LINE 官方 mention metadata
   if (message.mentioned?.mentionees?.length) {
-    // 依原始位置由前往後排序，key 編號依此順序命名
     const forwardSorted = [...message.mentioned.mentionees].sort((a, b) => a.index - b.index);
 
-    // 先建立 segments（key 依前→後順序，確保還原順序正確）
     forwardSorted.forEach((m, i) => {
       const key = `__MENTION_${i}__`;
-      const mentionText = m.type === "all" ? "@All" : (message.text || "").substr(m.index, m.length);
+      const mentionText =
+        m.type === "all"
+          ? "@All"
+          : originalText.substr(m.index, m.length);
+
       segments.push({ key, text: mentionText });
     });
 
-    // 替換時由後往前，避免替換後 index 偏移
     [...forwardSorted].reverse().forEach((m, ri) => {
       const i = forwardSorted.length - 1 - ri;
       const key = `__MENTION_${i}__`;
-      masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
+      masked =
+        masked.slice(0, m.index) +
+        key +
+        masked.slice(m.index + m.length);
     });
-    
+
+    console.log("🔍 masked after official replace:", masked);
+    console.log("🔍 segments:", segments);
     return { masked, segments };
   }
 
-  // regex fallback（LINE API 沒有提供 mentionees 時才執行）
- const manualRegex = /@([^@，,。、:：;；!?！()[\]{}【】（）\n]+)/g;
+  // 2) fallback：只抓安全 mention，避免把正文一起吞掉
+  //    支援：@YOLANDA、@意瑪、@ต.เติ้ลเอง、@all
+  //    不硬抓含空白 display name，避免誤切正文
+  const manualRegex = /@(?:all|[A-Za-z0-9_.-]+|[\u4e00-\u9fffA-Za-z0-9_.-]+|[\u0E00-\u0E7F.\-]+)/g;
+
   let idx = 0;
   let newMasked = "";
   let last = 0;
   let m;
 
-while ((m = manualRegex.exec(masked)) !== null) {
-  const rawMentionText = m[0];
-  const mentionText = rawMentionText.trimEnd();
-  const key = `__MENTION_${idx}__`;
-  segments.push({ key, text: mentionText });
-  newMasked += masked.slice(last, m.index) + key;
-  last = m.index + rawMentionText.length;
-  idx++;
-}
+  while ((m = manualRegex.exec(originalText)) !== null) {
+    const rawMentionText = m[0];
+    const key = `__MENTION_${idx}__`;
 
-  newMasked += masked.slice(last);
+    segments.push({ key, text: rawMentionText });
+    newMasked += originalText.slice(last, m.index) + key;
+    last = m.index + rawMentionText.length;
+    idx++;
+  }
+
+  newMasked += originalText.slice(last);
+
+  console.log("🔍 masked after fallback replace:", newMasked);
+  console.log("🔍 segments:", segments);
+
   return { masked: newMasked, segments };
 }
 function restoreMentions(text, segments) {
