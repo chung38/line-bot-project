@@ -2264,6 +2264,11 @@ async function handleEvent(event) {
 
     const langSet = groupLang.get(gid);
     if (!langSet || langSet.size === 0) return null;
+    if (event.message?.mentioned) {
+      console.log("📌 RAW mentioned:", JSON.stringify(event.message.mentioned));
+      console.log("📌 RAW text length:", [...event.message.text].length);
+      console.log("📌 RAW text:", JSON.stringify(event.message.text));
+    }
 
     const { masked, segments } = extractMentionsFromLineMessage(event.message);
     const normalizedForDetect = normalizeTextForLangDetect(masked);
