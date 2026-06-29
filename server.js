@@ -233,62 +233,57 @@ function extractMentionsFromLineMessage(message) {
   let masked = originalText;
   const segments = [];
 
-  console.log("🔎 message.text =", originalText);
-  console.log("🔎 message.mentioned =", JSON.stringify(message.mentioned || null));
-
-  // 1) 優先使用 LINE 官方 mention metadata
   if (message.mentioned?.mentionees?.length) {
-    const forwardSorted = [...message.mentioned.mentionees].sort((a, b) => a.index - b.index);
+    // LINE 的 index 可能不包含 @ 符號，需自動對齊
+    const normalized = message.mentioned.mentionees
+      .map(m => {
+        // 如果 index 位置不是 @，往前找最近的 @
+        let start = m.index;
+        if (originalText[start] !== '@') {
+          const prev = originalText.lastIndexOf('@', start);
+          if (prev !== -1 && start - prev <= 2) start = prev;
+        }
+        // 結尾往前找到第一個空白或換行為止（避免多吃正文）
+        let end = m.index + m.length;
+        while (end > start + 1 && (originalText[end - 1] === ' ' || originalText[end - 1] === '\n')) {
+          end--;
+        }
+        const mentionText = m.type === "all" ? "@All" : originalText.slice(start, end);
+        return { ...m, start, end, mentionText };
+      })
+      .sort((a, b) => a.start - b.start);
 
-    forwardSorted.forEach((m, i) => {
-      const key = `__MENTION_${i}__`;
-      const mentionText =
-        m.type === "all"
-          ? "@All"
-          : originalText.substr(m.index, m.length);
-
-      segments.push({ key, text: mentionText });
+    normalized.forEach((m, i) => {
+      segments.push({ key: `__MENTION_${i}__`, text: m.mentionText });
     });
 
-    [...forwardSorted].reverse().forEach((m, ri) => {
-      const i = forwardSorted.length - 1 - ri;
+    // 由後往前替換，避免 index 偏移
+    [...normalized].reverse().forEach((m, ri) => {
+      const i = normalized.length - 1 - ri;
       const key = `__MENTION_${i}__`;
-      masked =
-        masked.slice(0, m.index) +
-        key +
-        masked.slice(m.index + m.length);
+      masked = masked.slice(0, m.start) + key + masked.slice(m.end);
     });
 
     console.log("🔍 masked after official replace:", masked);
-    console.log("🔍 segments:", segments);
+    console.log("🔍 segments:", JSON.stringify(segments));
     return { masked, segments };
   }
 
-  // 2) fallback：只抓安全 mention，避免把正文一起吞掉
-  //    支援：@YOLANDA、@意瑪、@ต.เติ้ลเอง、@all
-  //    不硬抓含空白 display name，避免誤切正文
+  // fallback：只抓無空白 mention
   const manualRegex = /@(?:all|[A-Za-z0-9_.-]+|[\u4e00-\u9fffA-Za-z0-9_.-]+|[\u0E00-\u0E7F.\-]+)/g;
-
-  let idx = 0;
-  let newMasked = "";
-  let last = 0;
-  let m;
+  let idx = 0, newMasked = "", last = 0, m;
 
   while ((m = manualRegex.exec(originalText)) !== null) {
-    const rawMentionText = m[0];
     const key = `__MENTION_${idx}__`;
-
-    segments.push({ key, text: rawMentionText });
+    segments.push({ key, text: m[0] });
     newMasked += originalText.slice(last, m.index) + key;
-    last = m.index + rawMentionText.length;
+    last = m.index + m[0].length;
     idx++;
   }
 
   newMasked += originalText.slice(last);
-
-  console.log("🔍 masked after fallback replace:", newMasked);
-  console.log("🔍 segments:", segments);
-
+  console.log("🔍 masked after fallback:", newMasked);
+  console.log("🔍 segments:", JSON.stringify(segments));
   return { masked: newMasked, segments };
 }
 function restoreMentions(text, segments) {
