@@ -231,7 +231,8 @@ function isPureChineseMessage(text = "") {
 function extractMentionsFromLineMessage(message) {
   let masked = message.text || "";
   const segments = [];
-
+console.log("🔍 masked after replace:", masked);
+    console.log("🔍 segments:", segments);
   if (message.mentioned?.mentionees?.length) {
     // 依原始位置由前往後排序，key 編號依此順序命名
     const forwardSorted = [...message.mentioned.mentionees].sort((a, b) => a.index - b.index);
@@ -249,8 +250,7 @@ function extractMentionsFromLineMessage(message) {
       const key = `__MENTION_${i}__`;
       masked = masked.slice(0, m.index) + key + masked.slice(m.index + m.length);
     });
-    console.log("🔍 masked after replace:", masked);
-    console.log("🔍 segments:", segments);
+    
     return { masked, segments };
   }
 
