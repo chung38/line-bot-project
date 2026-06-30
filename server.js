@@ -161,8 +161,6 @@ function normalizeTextForLangDetect(text = "") {
   return String(text)
     .replace(/__MENTION_\d+__/g, " ")
     .replace(/@\S+/g, " ")
-    .replace(/[\u0E00-\u0E7F]+/g, " ")          // ✅ 新增：清掉殘留泰文
-    .replace(/[\u0102-\u01B0\u1EA0-\u1EF9]+/g, " ") // ✅ 新增：清掉殘留越文
     .replace(/\s+/g, " ")
     .trim();
 }
