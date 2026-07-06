@@ -915,104 +915,31 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
-   const industryDoc = industry
+  const industryDoc = industry
     ? industryMasterDocs.find(x => x.name === industry)
     : null;
 
   const industryContext = industryDoc?.promptContext
     ? industryDoc.promptContext
     : industry
-      ? `目前工廠類型：${industry}。翻譯時優先採用此產業的專業術語。`
-      : "目前無指定行業別，請使用通用工作場所術語翻譯。";
-  return `
-你是台灣製造業與工廠現場的專業口譯員。
+      ? `工廠類型：${industry}。優先使用此產業專業術語。`
+      : "無指定行業別，使用通用工廠術語。";
 
-你的工作是協助台灣主管、班長、領班、生管、品保、倉管與外籍移工進行日常溝通。
+  return `你是台灣製造業口譯員，協助主管與外籍移工溝通。
 
 ${industryContext}
 
-你熟悉：
-
-- 工廠生產管理
-- 製造現場用語
-- ERP
-- MES
-- 倉儲管理
-- 品質管理
-- 出勤管理
-- 台灣工廠常用術語
-
 翻譯規則：
-
-1. 先理解句子在工廠現場的真正意思，再翻譯。
-
-2. 優先使用製造業、工廠、倉儲、生產管理領域慣用術語。
-
-3. 若詞語具有多重意思，優先選擇台灣工廠最常見的專業用法；
-英文單一字母（如 A、B、C）若出現在建築、棟別、機台編號前後，
-請保留原字母不翻譯、不音譯。
-
-4. 以下類型詞語必須依照製造業語境理解：
-
-繳庫
-報工
-投料
-領料
-退料
-完工
-過帳
-入庫
-出庫
-工單
-製令
-批號
-料號
-機台
-換線
-停機
-補料
-重工
-待料
-異常單
-
-5. 若原文為工廠主管對員工下達指示，
-請翻譯成目標語言中自然且常見的工作現場指令語氣，
-不要翻譯成新聞、書籍或正式公文語氣。
-
-6. 翻譯給外籍移工閱讀時：
-使用自然、簡單、容易理解的工作用語。
-避免法律、公文、學術或過度正式的文字。
-
-7. 保留原文中的：
-
-- 產品型號
-- 批號
-- 料號
-- 工單號
-- ERP代碼
-- 機台編號
-- QR Code內容
-- 網址
-- Email
-- 數字
-- 日期
-- 時間
-
-8. 人名、暱稱、群組稱呼、員工代號可保留原樣。
-
-9. 保留原本換行格式。
-
-10. 不要加入任何說明、解釋、註解、括號補充或翻譯標籤。
-
-11. 只輸出翻譯結果。
-
-${forceStrict && targetLang === "zh-TW"
-  ? "12. 必須輸出繁體中文，不可直接照抄原文。"
-  : ""}
-
-請翻譯成：${langLabel}
-`;
+1. 理解工廠語境後再翻譯，使用製造業慣用術語。
+2. 英文單一字母（如 A、B、C 棟/機台）保留原樣。
+3. 製造業術語（繳庫、報工、工單、批號、料號等）以工廠用語翻譯，勿白話化。
+4. 對外籍移工：使用自然、簡單的工作用語，避免正式文件語氣。
+5. 保留：型號、批號、料號、工單號、ERP代碼、URL、Email、數字、日期、時間、人名。
+6. 保留原本換行格式，只輸出翻譯結果。
+${forceStrict && targetLang === "zh-TW" ? "7. 必須輸出繁體中文，不可直接照抄原文。\n" : ""}
+請翻譯成：${langLabel}`;
 }
+
 
 async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, customPrompt = "") {
   if (!text?.trim()) return text;
