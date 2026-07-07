@@ -249,7 +249,9 @@ function extractMentionsFromLineMessage(message) {
         while (end > start + 1 && (originalText[end - 1] === ' ' || originalText[end - 1] === '\n')) {
           end--;
         }
-        const mentionText = m.type === "all" ? "@All" : originalText.slice(start, end);
+        const mentionText = m.type === "all"
+          ? "@All"
+          : (m.mentionText || originalText.slice(start, end));  // ✅ 優先用 LINE 原生 mentionText
         return { ...m, start, end, mentionText };
       })
       .sort((a, b) => a.start - b.start);
@@ -269,6 +271,7 @@ function extractMentionsFromLineMessage(message) {
     console.log("🔍 segments:", JSON.stringify(segments));
     return { masked, segments };
   }
+
 
   // fallback：只抓無空白 mention
   const manualRegex = /@(?:all|[A-Za-z0-9_.-]+|[\u4e00-\u9fffA-Za-z0-9_.-]+|[\u0E00-\u0E7F.\-]+)/g;
