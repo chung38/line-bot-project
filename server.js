@@ -939,7 +939,8 @@ ${industryContext}
 4. 對外籍移工：使用自然、簡單的工作用語，避免正式文件語氣。
 5. 保留：型號、批號、料號、工單號、ERP代碼、URL、Email、數字、日期、時間、人名。
 6. 保留原本換行格式，只輸出翻譯結果。
-${forceStrict && targetLang === "zh-TW" ? "7. 必須輸出繁體中文，不可直接照抄原文。\n" : ""}
+7. 必須忠實傳達原文語意，不可自行補充原文沒有的主詞、受詞、代詞、對象或人稱稱呼。
+${forceStrict && targetLang === "zh-TW" ? "8. 必須輸出繁體中文，不可直接照抄原文。\n" : ""}
 請翻譯成：${langLabel}`;
 }
 
@@ -966,7 +967,7 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
         messages: [
           {
             role: "system",
-            content:"你是專業翻譯引擎。只輸出翻譯結果。禁止解釋、禁止註解、禁止增加前後綴、禁止輸出語言名稱。"
+            content:"你是專業翻譯引擎。只輸出翻譯結果。禁止解釋、禁止註解、禁止增加前後綴、禁止輸出語言名稱。禁止腦補原文未出現的主詞、代詞、對象、人稱或語氣。"
           },
           {
             role: "system",
