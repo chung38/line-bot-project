@@ -2221,7 +2221,7 @@ async function handleEvent(event) {
 
     processTranslationInBackground(
       replyToken, gid, uid, masked, segments, rawLines,
-      langSet, hasOfficialMentionData, sourceLang, useResult.inviterUserId
+      langSet, sourceLang, useResult.inviterUserId, hasOfficialMentionData
     ).catch(e => console.error("背景翻譯失敗:", e));
   }
 
