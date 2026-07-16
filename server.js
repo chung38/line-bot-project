@@ -1098,7 +1098,7 @@ if (afterLastUrl.trim()) {
   return restoreMentions(outLine, segments);
 }
 
-async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, ownerUserId) {
+async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, ownerUserId, hasOfficialMentionData = false) {
   const allNeededLangs = new Set();
   const langOutputs = {};
 
@@ -1132,7 +1132,9 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
 
   [...langSet].forEach(code => {
     if (code === "zh-TW") return;
-    if (!isChineseDominant && code === sourceLang) return;
+      if (hasOfficialMentionData && !isChineseDominant && code === sourceLang) {
+    return;
+  }
     allNeededLangs.add(code);
   });
 
@@ -2202,7 +2204,7 @@ async function handleEvent(event) {
       console.log("📌 RAW text:", JSON.stringify(event.message.text));
     }
 
-    const { masked, segments } = extractMentionsFromLineMessage(event.message);
+    const { masked, segments, hasOfficialMentionData } = extractMentionsFromLineMessage(event.message);
     const normalizedForDetect = normalizeTextForLangDetect(masked);
 
     if (!normalizedForDetect.trim()) return null;
@@ -2219,7 +2221,7 @@ async function handleEvent(event) {
 
     processTranslationInBackground(
       replyToken, gid, uid, masked, segments, rawLines,
-      langSet, sourceLang, useResult.inviterUserId
+      langSet, hasOfficialMentionData, sourceLang, useResult.inviterUserId
     ).catch(e => console.error("背景翻譯失敗:", e));
   }
 
