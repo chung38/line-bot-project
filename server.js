@@ -269,7 +269,7 @@ function extractMentionsFromLineMessage(message) {
 
     console.log("🔍 masked after official replace:", masked);
     console.log("🔍 segments:", JSON.stringify(segments));
-    return { masked, segments };
+    return { masked, segments, hasOfficialMentionData: true };
   }
 
 
@@ -288,7 +288,7 @@ function extractMentionsFromLineMessage(message) {
   newMasked += originalText.slice(last);
   console.log("🔍 masked after fallback:", newMasked);
   console.log("🔍 segments:", JSON.stringify(segments));
-  return { masked: newMasked, segments };
+  return { masked: newMasked, segments, hasOfficialMentionData: false };
 }
 function restoreMentions(text, segments) {
   let restored = text;
@@ -937,7 +937,7 @@ ${industryContext}
 2. 英文單一字母（如 A、B、C 棟/機台）保留原樣。
 3. 製造業術語（繳庫、報工、工單、批號、料號等）以工廠用語翻譯，勿白話化。
 4. 對外籍移工：使用自然、簡單的工作用語，避免正式文件語氣。
-5. 保留：型號、批號、料號、工單號、ERP代碼、URL、Email、數字、日期、時間、人名。
+5. 保留：型號、批號、料號、工單號、ERP代碼、URL、Email、數字、日期、時間。
 6. 保留原本換行格式，只輸出翻譯結果。
 7. 必須忠實傳達原文語意，不可自行補充原文沒有的主詞、受詞、代詞、對象或人稱稱呼。
 ${forceStrict && targetLang === "zh-TW" ? "8. 必須輸出繁體中文，不可直接照抄原文。\n" : ""}
