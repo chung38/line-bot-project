@@ -787,14 +787,24 @@ async function getUserDisplayNameByUserId(userId) {
   }
 }
 
-async function safeReplyOrPush(replyToken, gid, text) {
+async function safeReply(replyToken, text) {
+  if (!replyToken) {
+    console.error("❌ 無 replyToken，略過回覆");
+    return false;
+  }
+
   try {
-    if (!replyToken) throw new Error("No replyToken");
-    await client.replyMessage(replyToken, { type: "text", text });
-  } catch {
-    if (gid) {
-      await client.pushMessage(gid, { type: "text", text });
-    }
+    await client.replyMessage(replyToken, {
+      type: "text",
+      text
+    });
+    return true;
+  } catch (e) {
+    console.error(
+      "❌ LINE Reply 失敗，不改用 Push：",
+      e.response?.data || e.message
+    );
+    return false;
   }
 }
 
@@ -981,7 +991,7 @@ async function translateWithChatGPT(text, targetLang, gid = null, retry = 0, cus
       },
       {
         headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-        timeout: 30000
+        timeout: 25000
       }
     );
 
@@ -1159,7 +1169,7 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
       setTimeout(() => {
         translationTimedOut = true;
         reject(new Error("Translation timeout"));
-      }, 25000)
+      }, 28000)
     )
   ]).catch(e => {
     console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
