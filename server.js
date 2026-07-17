@@ -1136,17 +1136,38 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
     (chineseLen >= 2 && chineseRatio >= 0.45) ||
     (chineseLen >= 4 && foreignLen === 0);
 
-  if (!isChineseDominant) {
-    allNeededLangs.add("zh-TW");
-  }
+if (!isChineseDominant) {
+  allNeededLangs.add("zh-TW");
+}
 
-  [...langSet].forEach(code => {
-    if (code === "zh-TW") return;
-      if (hasOfficialMentionData && !isChineseDominant && code === sourceLang) {
+/*
+  sourceLang 是目前訊息偵測出的原文語言。
+
+  - 中文為主：群組勾選的每個外文都要翻。
+    例如「明天請 @Pakat 06:30 上班」，
+    即使 @Pakat 是泰文姓名，也仍必須輸出泰文。
+
+  - 非中文為主：跳過原文語言，避免把泰文再翻泰文、
+    越南文再翻越南文或印尼文再翻印尼文。
+
+  hasOfficialMentionData 保留給 mention 的官方遮罩／還原流程使用，
+  不用它來決定是否跳過來源語言。
+*/
+const isForeignSource = ["en", "th", "vi", "id"].includes(sourceLang);
+
+const shouldSkipSourceLanguage =
+  isForeignSource &&
+  !isChineseDominant;
+
+[...langSet].forEach(code => {
+  if (code === "zh-TW") return;
+
+  if (shouldSkipSourceLanguage && code === sourceLang) {
     return;
   }
-    allNeededLangs.add(code);
-  });
+
+  allNeededLangs.add(code);
+});
 
   const targetLangs = [...allNeededLangs];
   if (!targetLangs.length) return;
