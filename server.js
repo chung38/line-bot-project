@@ -1193,7 +1193,7 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
   }
 
   const userName = await getGroupMemberDisplayName(gid, uid);
-  await safeReplyOrPush(replyToken, gid, `【${userName}】說：\n${replyText.trim()}`);
+  await safeReply(replyToken, `【${userName}】說：\n${replyText.trim()}`);
   await incrementMonthlyUsage(ownerUserId, 1, masked.length);
 }
 
