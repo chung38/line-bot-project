@@ -807,7 +807,41 @@ async function safeReply(replyToken, text) {
     return false;
   }
 }
+async function safeReplyOrPush(replyToken, gid, text) {
+  if (replyToken) {
+    try {
+      await client.replyMessage(replyToken, {
+        type: "text",
+        text
+      });
+      return true;
+    } catch (e) {
+      console.error(
+        "LINE Reply 失敗，改用 Push：",
+        e.response?.data || e.message
+      );
+    }
+  }
 
+  if (!gid) {
+    console.error("safeReplyOrPush 缺少 gid");
+    return false;
+  }
+
+  try {
+    await client.pushMessage(gid, {
+      type: "text",
+      text
+    });
+    return true;
+  } catch (e) {
+    console.error(
+      "LINE Push 失敗：",
+      e.response?.data || e.message
+    );
+    return false;
+  }
+}
 async function loadLang() {
   const snapshot = await db.collection("groupLanguages").get();
   snapshot.forEach(doc => {
