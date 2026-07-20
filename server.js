@@ -2181,7 +2181,7 @@ async function handleEvent(event) {
       }
 
       await loadIndustryMaster();
-      await client.pushMessage(gid, buildIndustryMenu());
+      await client.replyMessage(replyToken, buildIndustryMenu());
       return null;
     }
 
