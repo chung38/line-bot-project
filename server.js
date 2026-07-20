@@ -274,7 +274,8 @@ function extractMentionsFromLineMessage(message) {
 
 
   // fallback：只抓無空白 mention
-  const manualRegex = /@(?:all|[A-Za-z0-9_.-]+|[\u4e00-\u9fffA-Za-z0-9_.-]+|[\u0E00-\u0E7F.\-]+)/g;
+  const manualRegex =
+  /@(?:all|[\p{L}\p{M}\p{N}._-]+(?:\s+[\p{L}\p{M}\p{N}._-]+)*)/gu;
   let idx = 0, newMasked = "", last = 0, m;
 
   while ((m = manualRegex.exec(originalText)) !== null) {
