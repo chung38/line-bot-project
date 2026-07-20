@@ -1492,19 +1492,130 @@ adminRouter.get("/constants", async (req, res) => {
 adminRouter.get("/dashboard", async (req, res) => {
   try {
     await loadIndustryMaster();
+
+    const monthKey = getMonthKey();
+    const now = new Date();
+    const expiringThreshold = new Date(now);
+    expiringThreshold.setDate(expiringThreshold.getDate() + 7);
+
     const allGids = getAllKnownGroupIds();
     const groupsWithIndustry = allGids.filter(gid => !!groupIndustry.get(gid)).length;
-    const groupsWithLang = allGids.filter(gid => (groupLang.get(gid) || new Set()).size > 0).length;
+    const groupsWithLang = allGids.filter(
+      gid => (groupLang.get(gid) || new Set()).size > 0
+    ).length;
 
     const langUsage = {};
-    Object.keys(SUPPORTED_LANGS).forEach(code => { langUsage[code] = 0; });
+    Object.keys(SUPPORTED_LANGS).forEach(code => {
+      langUsage[code] = 0;
+    });
     allGids.forEach(gid => {
-      const set = groupLang.get(gid) || new Set();
-      [...set].forEach(code => { langUsage[code] = (langUsage[code] || 0) + 1; });
+      (groupLang.get(gid) || new Set()).forEach(code => {
+        langUsage[code] = (langUsage[code] || 0) + 1;
+      });
     });
 
-    const logSnapshot = await db.collection("adminLogs").orderBy("createdAt", "desc").limit(20).get();
-    const recentLogs = logSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const [logSnapshot, subscriptionSnapshot, usageSnapshot] = await Promise.all([
+      db.collection("adminLogs").orderBy("createdAt", "desc").limit(20).get(),
+      db.collection("userSubscriptions").get(),
+      db.collection("usageMonthly").where("monthKey", "==", monthKey).get(),
+    ]);
+
+    const usageByUser = new Map();
+    let monthlyTranslations = 0;
+    let monthlyChars = 0;
+
+    usageSnapshot.forEach(doc => {
+      const usage = doc.data();
+      const userId = usage.userId;
+      const translationCount = Number(usage.translationCount || 0);
+      const charCount = Number(usage.charCount || 0);
+
+      if (userId) {
+        usageByUser.set(userId, {
+          translationCount,
+          charCount,
+          monthKey: usage.monthKey || monthKey,
+        });
+      }
+
+      monthlyTranslations += translationCount;
+      monthlyChars += charCount;
+    });
+
+    const subscriptionStatus = {
+      trial: 0,
+      active: 0,
+      manualActive: 0,
+      inactive: 0,
+      paymentFailed: 0,
+    };
+
+    const quotaAlerts = {
+      normal: 0,
+      warning80: 0,
+      exhausted: 0,
+      unlimited: 0,
+    };
+
+    const expiringSoon = [];
+
+    subscriptionSnapshot.forEach(doc => {
+      const sub = doc.data();
+      const userId = doc.id;
+      const status = normalizeSubscriptionStatus(sub.status);
+      const manualOverride = normalizeManualOverride(sub.manualOverride);
+      const usage = usageByUser.get(userId) || {
+        translationCount: 0,
+        charCount: 0,
+      };
+
+      if (status === SUBSCRIPTION_STATUS.TRIAL) subscriptionStatus.trial++;
+      else if (status === SUBSCRIPTION_STATUS.ACTIVE) subscriptionStatus.active++;
+      else if (status === SUBSCRIPTION_STATUS.MANUAL_ACTIVE) subscriptionStatus.manualActive++;
+      else if (status === SUBSCRIPTION_STATUS.PAYMENT_FAILED) subscriptionStatus.paymentFailed++;
+      else subscriptionStatus.inactive++;
+
+      const quota = Number(sub.monthlyQuota || 0);
+      const used = Number(usage.translationCount || 0);
+
+      if (quota <= 0) {
+        quotaAlerts.unlimited++;
+      } else if (used >= quota) {
+        quotaAlerts.exhausted++;
+      } else if (used / quota >= 0.8) {
+        quotaAlerts.warning80++;
+      } else {
+        quotaAlerts.normal++;
+      }
+
+      const expiresAt = status === SUBSCRIPTION_STATUS.TRIAL
+        ? toDateSafe(sub.trialEndsAt)
+        : toDateSafe(sub.currentPeriodEnd);
+
+      if (
+        expiresAt &&
+        expiresAt >= now &&
+        expiresAt <= expiringThreshold &&
+        status !== SUBSCRIPTION_STATUS.INACTIVE &&
+        status !== SUBSCRIPTION_STATUS.PAYMENT_FAILED
+      ) {
+        expiringSoon.push({
+          userId,
+          status,
+          plan: sub.plan || "",
+          expiresAt,
+          used,
+          quota,
+        });
+      }
+    });
+
+    expiringSoon.sort((a, b) => a.expiresAt - b.expiresAt);
+
+    const recentLogs = logSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
 
     res.json({
       success: true,
@@ -1513,22 +1624,59 @@ adminRouter.get("/dashboard", async (req, res) => {
         groupsWithLang,
         groupsWithIndustry,
         totalIndustries: industryMasterDocs.length,
-        enabledIndustries: getEnabledIndustryNames().length
+        enabledIndustries: getEnabledIndustryNames().length,
+        langUsage,
+
+        monthKey,
+        monthlyTranslations,
+        monthlyChars,
+        subscriptionStatus,
+        quotaAlerts,
+        expiringSoonCount: expiringSoon.length,
       },
-      langUsage,
-      recentLogs
+      expiringSoon: expiringSoon.slice(0, 10),
+      recentLogs,
     });
   } catch (e) {
+    console.error("GET /admin/dashboard:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
 adminRouter.get("/groups", async (req, res) => {
   try {
-    const groups = await Promise.all(
-      getAllKnownGroupIds().map(async (gid) => {
-        const inviter = groupInviter.get(gid) || null;
+    const monthKey = getMonthKey();
+    const allGids = getAllKnownGroupIds();
 
+    const inviterIds = [
+      ...new Set(
+        allGids
+          .map(gid => groupInviter.get(gid))
+          .filter(Boolean)
+      ),
+    ];
+
+    const [subscriptionDocs, usageDocs] = await Promise.all([
+      Promise.all(
+        inviterIds.map(async userId => [
+          userId,
+          await getSubscriptionByUserId(userId),
+        ])
+      ),
+      Promise.all(
+        inviterIds.map(async userId => [
+          userId,
+          await getMonthlyUsage(userId, monthKey),
+        ])
+      ),
+    ]);
+
+    const subscriptionByUser = new Map(subscriptionDocs);
+    const usageByUser = new Map(usageDocs);
+
+    const groups = await Promise.all(
+      allGids.map(async gid => {
+        const inviter = groupInviter.get(gid) || null;
         let groupName = null;
         let inviterName = null;
         let memberCount = null;
@@ -1537,14 +1685,14 @@ adminRouter.get("/groups", async (req, res) => {
           const summary = await client.getGroupSummary(gid);
           groupName = summary?.groupName || null;
         } catch (e) {
-          console.warn(`取得群組名稱失敗 ${gid}:`, e.message);
+          console.warn("取得群組名稱失敗:", gid, e.message);
         }
 
         try {
           const countRes = await client.getGroupMembersCount(gid);
           memberCount = countRes?.count ?? null;
         } catch (e) {
-          console.warn(`取得群組人數失敗 ${gid}:`, e.message);
+          console.warn("取得群組人數失敗:", gid, e.message);
         }
 
         if (inviter) {
@@ -1552,9 +1700,38 @@ adminRouter.get("/groups", async (req, res) => {
             const profile = await client.getGroupMemberProfile(gid, inviter);
             inviterName = profile?.displayName || inviter;
           } catch (e) {
-            console.warn(`取得授權者名稱失敗 ${gid}/${inviter}:`, e.message);
+            console.warn("取得邀請人名稱失敗:", gid, inviter, e.message);
           }
         }
+
+        const rawSub = inviter ? subscriptionByUser.get(inviter) : null;
+        const rawUsage = inviter
+          ? usageByUser.get(inviter)
+          : { translationCount: 0, charCount: 0, monthKey };
+
+        const subscription = rawSub
+          ? {
+              status: normalizeSubscriptionStatus(rawSub.status),
+              plan: rawSub.plan || "",
+              monthlyQuota: Number(rawSub.monthlyQuota || 0),
+              maxGroups: Number(rawSub.maxGroups || 0),
+              trialEndsAt: rawSub.trialEndsAt || null,
+              currentPeriodEnd: rawSub.currentPeriodEnd || null,
+              manualOverride: normalizeManualOverride(rawSub.manualOverride),
+            }
+          : null;
+
+        const usage = {
+          translationCount: Number(rawUsage?.translationCount || 0),
+          charCount: Number(rawUsage?.charCount || 0),
+          monthKey: rawUsage?.monthKey || monthKey,
+        };
+
+        const quota = subscription?.monthlyQuota ?? 0;
+        const used = usage.translationCount;
+        const usagePercent = quota > 0
+          ? Math.round((used / quota) * 100)
+          : null;
 
         return {
           gid,
@@ -1563,13 +1740,26 @@ adminRouter.get("/groups", async (req, res) => {
           langs: [...(groupLang.get(gid) || new Set())],
           industry: groupIndustry.get(gid) || null,
           inviter,
-          inviterName
+          inviterName,
+          subscription,
+          usage: {
+            ...usage,
+            usagePercent,
+            quotaState: quota <= 0
+              ? "UNLIMITED"
+              : used >= quota
+                ? "EXHAUSTED"
+                : usagePercent >= 80
+                  ? "WARNING"
+                  : "NORMAL",
+          },
         };
       })
     );
 
-    res.json({ success: true, groups });
+    res.json({ success: true, monthKey, groups });
   } catch (e) {
+    console.error("GET /admin/groups:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
