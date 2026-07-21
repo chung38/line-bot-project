@@ -271,26 +271,38 @@ function extractMentionsFromLineMessage(message) {
     console.log("🔍 segments:", JSON.stringify(segments));
     return { masked, segments, hasOfficialMentionData: true };
   }
+  // fallback：LINE 未附 mentioned 資料時，僅保護可明確判斷的 @All。
+  // 不可用「@名字後可含空白」的規則，否則會把 @All 後面的整句一起吃掉。
+  const manualRegex = /@all\b/giu;
 
-
-  // fallback：只抓無空白 mention
-  const manualRegex =
-  /@(?:all|[\p{L}\p{M}\p{N}._-]+(?:\s+[\p{L}\p{M}\p{N}._-]+)*)/gu;
-  let idx = 0, newMasked = "", last = 0, m;
+  let idx = 0;
+  let newMasked = "";
+  let last = 0;
+  let m;
 
   while ((m = manualRegex.exec(originalText)) !== null) {
     const key = `__MENTION_${idx}__`;
-    segments.push({ key, text: m[0] });
+
+    // 統一還原為 @All，保留原訊息意義且不會翻譯 mention
+    segments.push({ key, text: "@All" });
+
     newMasked += originalText.slice(last, m.index) + key;
     last = m.index + m[0].length;
     idx++;
   }
 
   newMasked += originalText.slice(last);
+
   console.log("🔍 masked after fallback:", newMasked);
   console.log("🔍 segments:", JSON.stringify(segments));
-  return { masked: newMasked, segments, hasOfficialMentionData: false };
-}
+
+  return {
+    masked: newMasked,
+    segments,
+    hasOfficialMentionData: false
+  };
+
+
 function restoreMentions(text, segments) {
   let restored = text;
   segments.forEach(seg => {
