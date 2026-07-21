@@ -229,65 +229,89 @@ function isPureChineseMessage(text = "") {
   return chineseLen >= 1 && chineseRatio >= 0.6 && foreignLen === 0
 ;
 }
+
 function extractMentionsFromLineMessage(message) {
   const originalText = message.text || "";
   let masked = originalText;
   const segments = [];
 
+  // LINE 有提供官方 mention 資料時，優先採用
   if (message.mentioned?.mentionees?.length) {
-    // LINE 的 index 可能不包含 @ 符號，需自動對齊
     const normalized = message.mentioned.mentionees
       .map(m => {
-        // 如果 index 位置不是 @，往前找最近的 @
         let start = m.index;
-        if (originalText[start] !== '@') {
-          const prev = originalText.lastIndexOf('@', start);
+
+        // LINE 的 index 有時不含 @，向前校正至 @ 的位置
+        if (originalText[start] !== "@") {
+          const prev = originalText.lastIndexOf("@", start);
           if (prev !== -1 && start - prev <= 2) start = prev;
         }
-        // 結尾往前找到第一個空白或換行為止（避免多吃正文）
+
         let end = m.index + m.length;
-        while (end > start + 1 && (originalText[end - 1] === ' ' || originalText[end - 1] === '\n')) {
+
+        // 避免 LINE 的 mention 長度帶到尾端空白／換行
+        while (
+          end > start + 1 &&
+          (originalText[end - 1] === " " || originalText[end - 1] === "\n")
+        ) {
           end--;
         }
+
         const mentionText = m.type === "all"
           ? "@All"
-          : (m.mentionText || originalText.slice(start, end));  // ✅ 優先用 LINE 原生 mentionText
+          : (m.mentionText || originalText.slice(start, end));
+
         return { ...m, start, end, mentionText };
       })
       .sort((a, b) => a.start - b.start);
 
     normalized.forEach((m, i) => {
-      segments.push({ key: `__MENTION_${i}__`, text: m.mentionText });
+      segments.push({
+        key: `__MENTION_${i}__`,
+        text: m.mentionText
+      });
     });
 
-    // 由後往前替換，避免 index 偏移
-    [...normalized].reverse().forEach((m, ri) => {
-      const i = normalized.length - 1 - ri;
+    // 由後往前替換，避免字串長度變動導致 index 位移
+    [...normalized].reverse().forEach((m, reverseIndex) => {
+      const i = normalized.length - 1 - reverseIndex;
       const key = `__MENTION_${i}__`;
-      masked = masked.slice(0, m.start) + key + masked.slice(m.end);
+
+      masked =
+        masked.slice(0, m.start) +
+        key +
+        masked.slice(m.end);
     });
 
     console.log("🔍 masked after official replace:", masked);
     console.log("🔍 segments:", JSON.stringify(segments));
-    return { masked, segments, hasOfficialMentionData: true };
+
+    return {
+      masked,
+      segments,
+      hasOfficialMentionData: true
+    };
   }
-  // fallback：LINE 未附 mentioned 資料時，僅保護可明確判斷的 @All。
-  // 不可用「@名字後可含空白」的規則，否則會把 @All 後面的整句一起吃掉。
+
+  // LINE 未附 mentioned 資料時，只保護 @All。
+  // 不用可包含空白的 @名稱規則，避免吃掉 @All 後面的整句文字。
   const manualRegex = /@all\b/giu;
 
   let idx = 0;
   let newMasked = "";
   let last = 0;
-  let m;
+  let match;
 
-  while ((m = manualRegex.exec(originalText)) !== null) {
+  while ((match = manualRegex.exec(originalText)) !== null) {
     const key = `__MENTION_${idx}__`;
 
-    // 統一還原為 @All，保留原訊息意義且不會翻譯 mention
-    segments.push({ key, text: "@All" });
+    segments.push({
+      key,
+      text: "@All"
+    });
 
-    newMasked += originalText.slice(last, m.index) + key;
-    last = m.index + m[0].length;
+    newMasked += originalText.slice(last, match.index) + key;
+    last = match.index + match[0].length;
     idx++;
   }
 
@@ -301,6 +325,7 @@ function extractMentionsFromLineMessage(message) {
     segments,
     hasOfficialMentionData: false
   };
+}
 
 
 function restoreMentions(text, segments) {
