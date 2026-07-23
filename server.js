@@ -304,7 +304,8 @@ function extractMentionsFromLineMessage(message) {
 
   // LINE 未附 mentioned 資料時，只保護 @All。
   // 不用可包含空白的 @名稱規則，避免吃掉 @All 後面的整句文字。
-  const manualRegex = /@all\b/giu;
+  const manualRegex = /@(?:all|[\p{L}\p{M}\p{N}._-]+)/giu;
+
 
   let idx = 0;
   let newMasked = "";
