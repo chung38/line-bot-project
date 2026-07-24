@@ -157,18 +157,10 @@ function isOnlyEmojiOrWhitespace(txt = "") {
 function isSymbolOrNum(txt = "") {
   return /^[\d\s.,!?，。？！、:：；"'"'（）【】《》+\-*/\\[\]{}|…%$#@~^`_=]+$/.test(txt);
 }
-function normalizeTextForLangDetect(text = "") {
-  return String(text)
-    .replace(/__MENTION_\d+__/g, " ")
-
-    // 處理 LINE 沒提供 mentioned 資料的情況：
-    // 例如「@Hoàn Trương Hữu 二樓燈泡」
-    // 偵測語言時排除 @姓名，但遇到中文正文就停止移除。
-    .replace(
-      /@[\p{L}\p{M}\p{N}._-]+(?:\s+[^\s\u4e00-\u9fff]+)*/gu,
-      " "
-    )
-
+function normalizeTextForLangDetect(text) {
+  return String(text ?? "")
+    .replace(/__MENTION_\d+__/g, "")
+    .replace(/https?:\/\/\S+/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 }
