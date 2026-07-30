@@ -1112,7 +1112,7 @@ async function translateWithChatGPT(
       e.response?.data?.error?.message || e.message;
 
     console.error(
-      `❌ [${SUPPORTEDLANGS[targetLang] || targetLang}] 翻譯失敗:`,
+      `❌ [${SUPPORTED_LANGS[targetLang] || targetLang}] 翻譯失敗:`,
       errMsg
     );
 
