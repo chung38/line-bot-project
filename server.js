@@ -1070,40 +1070,64 @@ async function translateWithChatGPT(
       .join("\n")
       .trim();
 
-    // 繁中翻譯基本檢查
-    if (targetLang === "zh-TW") {
-      const hasChinese = /[\u4e00-\u9fff]/.test(out);
-      const unchanged = out.trim() === text.trim();
-      const sourceHasChinese = /[\u4e00-\u9fff]/.test(text);
+// 繁中翻譯輸出檢查
+if (targetLang === "zh-TW") {
+  const hasChinese = /[\u4e00-\u9fff]/.test(out);
+  const unchanged = out.trim() === text.trim();
+  const sourceHasChinese = /[\u4e00-\u9fff]/.test(text);
 
-      // 人名、型號、代碼等可能本來就不需要翻譯
-      if (unchanged) {
-        translationCache.set(cacheKey, out);
-        return out;
-      }
+  // 來源包含泰文、越南文，卻仍輸出泰文／越南文，代表沒有翻成繁中
+  const outputStillThai = /[\u0E00-\u0E7F]/.test(out);
+  const outputStillVietnamese =
+    /[\u0102-\u01B0\u1EA0-\u1EF9]/.test(out);
 
-      // 原文已有中文，但結果完全沒有中文，才視為異常並重試
-      if (!hasChinese && sourceHasChinese) {
-        if (retry < 2) {
-          const strongPrompt = buildTranslationPrompt(
-            "zh-TW",
-            industry,
-            true
-          );
+  // 原文是非中文，但繁中結果完全沒有中文；
+  // 或結果仍含有泰文／越南文，都視為翻譯失敗。
+  const invalidZhTranslation =
+    !sourceHasChinese &&
+    (
+      !hasChinese ||
+      outputStillThai ||
+      outputStillVietnamese
+    );
 
-          return translateWithChatGPT(
-            text,
-            targetLang,
-            gid,
-            retry + 1,
-            strongPrompt
-          );
-        }
+  if (invalidZhTranslation) {
+    console.warn("⚠️ 繁中翻譯不符合預期，準備重試：", {
+      retry,
+      text,
+      out,
+      hasChinese,
+      outputStillThai,
+      outputStillVietnamese
+    });
 
-        out = "（翻譯異常，請稍後再試）";
-      }
+    if (retry < 2) {
+      const strongPrompt = buildTranslationPrompt(
+        "zh-TW",
+        industry,
+        true
+      );
+
+      return translateWithChatGPT(
+        text,
+        targetLang,
+        gid,
+        retry + 1,
+        strongPrompt
+      );
     }
 
+    // 已重試兩次仍無有效繁中結果：不可把原始泰文／越南文偽裝成繁中譯文
+    out = "（繁中翻譯異常，請稍後再試）";
+  }
+
+  // 只有「原文本身已有中文」且結果原樣返回時，才允許直接視為成功。
+  // 例如：原文本來就是繁中，或中文訊息中只有人名、型號。
+  if (unchanged && sourceHasChinese) {
+    translationCache.set(cacheKey, out);
+    return out;
+  }
+}
     translationCache.set(cacheKey, out);
     return out;
 
