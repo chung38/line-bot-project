@@ -979,7 +979,7 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const industryContext =
     industryDoc?.promptContext ||
     (industry
-      ? `工作類型：${industry}。使用此領域常用、清楚的術語。`
+      ? `工作類型：${industry}。僅在原文明確涉及此領域時，使用常用、清楚的術語。`
       : "");
 
   const zhRule =
@@ -989,7 +989,8 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 - 使用符合台灣用語習慣的繁體中文。
 - 可以自然表達，但不可為了通順而改變原意。
 - 人稱或指涉不明時，不可自行翻成「我自己」、「你自己」或「他自己」。
-- 不可直接照抄外語原文。`
+- 不可直接照抄外語原文。
+- 若原文不是中文，譯文必須包含繁體中文；人名、型號、代碼、日期、時間與 placeholder 除外。`
       : "";
 
   return `
@@ -1001,11 +1002,16 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 3. 必須正確保留誰在說話、對誰說、誰做事、對誰做、誰受益或誰負責；不得翻錯主詞、受詞、人稱、代詞、對象或否定語意。
 4. 房間號碼、床號、機台代號、型號、批號、料號、工單號、ERP 代碼、英文單一字母代號、數字、日期、時間、URL、Email 與 @提及 placeholder 必須保留原樣。
 5. 保留原文換行格式；工作內容使用適合該領域、自然且讓外籍工作者容易理解的用語。
+6. 產業背景只能用來協助理解原文已明確出現的專業術語；不得因產業背景、群組名稱或常見工作情境，自行補出原文未出現的人物、職務、設備、工作流程、加工步驟、時間、地點、責任或事件。
+7. 原文若是日常對話、健康狀況、請假、生活事項、時間或地點，優先採一般日常語意，不得強行套用產業術語。
+8. 原文不完整、缺少空格、包含縮寫或語意不明時，採保守翻譯；不得自行猜測、延伸或補寫細節。
+9. 除人名、@提及 placeholder、URL、Email、日期、時間、產品型號、代碼及必要原文縮寫外，譯文不得保留未翻譯的來源語言句子或片段。
 
 ${industryContext}
 ${zhRule}
 `.trim();
 }
+
 
 async function translateWithChatGPT(
   text,
