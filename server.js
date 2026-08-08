@@ -972,30 +972,33 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
 
+  // retry 時換成極簡 prompt，避免長規則讓模型「校對原文」而非翻譯
+  if (forceStrict) {
+    return `你是專業翻譯引擎，任務只有一件事：把輸入的文字翻譯成「${langLabel}」。
+
+嚴格禁止：
+- 只修正原文錯字或縮寫後直接輸出（那是校對，不是翻譯）
+- 輸出與輸入相同語言的內容
+- 輸出解釋、摘要、前後綴、標題或語言名稱
+
+自我檢查（輸出前必做）：
+- 我輸出的內容是「${langLabel}」嗎？
+- 如果我只是把原文的錯字改掉，那我做錯了，必須重新翻成「${langLabel}」。
+
+只輸出「${langLabel}」譯文，不要有任何其他文字。`.trim();
+  }
+
   const industryDoc = industry
     ? industryMasterDocs.find(x => x.name === industry)
     : null;
-
   const industryContext =
     industryDoc?.promptContext ||
     (industry
       ? `工作類型：${industry}。僅在原文明確涉及此領域時，使用常用、清楚的術語。`
       : "");
 
-  const zhRule =
-    forceStrict && targetLang === "zh-TW"
-      ? `
-繁體中文要求：
-- 使用符合台灣用語習慣的繁體中文。
-- 可以自然表達，但不可為了通順而改變原意。
-- 人稱或指涉不明時，不可自行翻成「我自己」、「你自己」或「他自己」。
-- 不可直接照抄外語原文。
-- 若原文不是中文，譯文必須包含繁體中文；人名、型號、代碼、日期、時間與 placeholder 除外。`
-      : "";
-
   return `
 你是專業即時翻譯引擎。將原文翻譯成「${langLabel}」。
-
 規則：
 1. 只輸出譯文；不得解釋、摘要、加標題、前後綴、註解或語言名稱。
 2. 忠實保留原意；不得新增、刪除、猜測或改變原文事實。
@@ -1006,9 +1009,7 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 7. 原文若是日常對話、健康狀況、請假、生活事項、時間或地點，優先採一般日常語意，不得強行套用產業術語。
 8. 原文不完整、缺少空格、包含縮寫或語意不明時，採保守翻譯；不得自行猜測、延伸或補寫細節。
 9. 除人名、@提及 placeholder、URL、Email、日期、時間、產品型號、代碼及必要原文縮寫外，譯文不得保留未翻譯的來源語言句子或片段。
-
 ${industryContext}
-${zhRule}
 `.trim();
 }
 
