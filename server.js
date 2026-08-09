@@ -1047,7 +1047,7 @@ async function translateWithChatGPT(
       "https://api.openai.com/v1/chat/completions",
       {
         model: "gpt-4.1-mini",
-       temperature: retry > 0 ? 0.3 : 0.1,
+       temperature: 0,
         max_tokens: 1000,
         messages: [
           {
@@ -1100,20 +1100,27 @@ if (targetLang === "zh-TW") {
     });
 
     if (retry < 2) {
-      const strongPrompt = buildTranslationPrompt(
-        "zh-TW",
-        industry,
-        true
-      );
+  const retryPrompt = `
+${buildTranslationPrompt("zh-TW", industry, true)}
 
-      return translateWithChatGPT(
-        text,
-        targetLang,
-        gid,
-        retry + 1,
-        strongPrompt
-      );
-    }
+這是一次翻譯修正重試。
+上一輪輸出錯誤地保留了來源語言原文。
+
+你現在必須將使用者訊息完整翻譯成繁體中文。
+除人名、產品型號、代碼、日期、時間、網址、Email 與 placeholder 外，
+輸出中不得保留泰文、越南文、印尼文或英文原句。
+只輸出繁體中文譯文。
+`.trim();
+
+  return translateWithChatGPT(
+    text,
+    targetLang,
+    gid,
+    retry + 1,
+    retryPrompt
+  );
+}
+
 
     // 重試兩次仍沒有中文，才顯示錯誤。
     // 不可把原始泰文偽裝為繁中翻譯。
