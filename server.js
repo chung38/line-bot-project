@@ -1047,7 +1047,7 @@ async function translateWithChatGPT(
       "https://api.openai.com/v1/chat/completions",
       {
         model: "gpt-4.1-mini",
-        temperature: 0,
+       temperature: retry > 0 ? 0.3 : 0.1,
         max_tokens: 1000,
         messages: [
           {
