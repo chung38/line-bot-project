@@ -971,10 +971,13 @@ async function addAdminLog(action, detail, actor = "admin", extra = {}) {
 }
 function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const langLabel = SUPPORTED_LANGS[targetLang] || targetLang;
+  const industryContext = buildIndustryContext(industry);
 
-  // retry 時換成極簡 prompt，避免長規則讓模型「校對原文」而非翻譯
+  // retry 時換成極簡 prompt，避免長規則讓模型「校對原文」而非翻譯。
+  // 規則精簡但仍保留產業脈絡，否則重試出來的譯文會少掉專業術語。
   if (forceStrict) {
     return `你是專業翻譯引擎，任務只有一件事：把輸入的文字翻譯成「${langLabel}」。
+${industryContext}
 
 嚴格禁止：
 - 只修正原文錯字或縮寫後直接輸出（那是校對，不是翻譯）
@@ -988,33 +991,23 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 只輸出「${langLabel}」譯文，不要有任何其他文字。`.trim();
   }
 
-  const industryDoc = industry
-    ? industryMasterDocs.find(x => x.name === industry)
-    : null;
-  const industryContext =
-    industryDoc?.promptContext ||
-    (industry
-      ? `工作類型：${industry}。僅在原文明確涉及此領域時，使用常用、清楚的術語。`
-      : "");
-
-  return `
-你是專業即時翻譯引擎。將原文翻譯成「${langLabel}」。
-規則：
-1. 只輸出譯文；不得解釋、摘要、加標題、前後綴、註解或語言名稱。
-2. 忠實保留原意；不得新增、刪除、猜測或改變原文事實。
-3. 必須正確保留誰在說話、對誰說、誰做事、對誰做、誰受益或誰負責；不得翻錯主詞、受詞、人稱、代詞、對象或否定語意。
-4. 房間號碼、床號、機台代號、型號、批號、料號、工單號、ERP 代碼、英文縮寫、英文代號、全大寫英文詞、英文與數字混合代碼、數字、日期、時間、URL、Email 與 @提及 placeholder 必須保留原樣。
-除非原文明確顯示該英文詞是一般句子中的可翻譯單字，否則不得自行翻譯其意思。
-5. 保留原文換行格式；工作內容使用適合該領域、自然且讓外籍工作者容易理解的用語。
-6. 產業背景只能用來協助理解原文已明確出現的專業術語；不得因產業背景、群組名稱或常見工作情境，自行補出原文未出現的人物、職務、設備、工作流程、加工步驟、時間、地點、責任或事件。
-7. 原文若是日常對話、健康狀況、請假、生活事項、時間或地點，優先採一般日常語意，不得強行套用產業術語。
-8. 原文不完整、缺少空格、包含縮寫或語意不明時，採保守翻譯；不得自行猜測、延伸或補寫細節。
-9. 除@提及 placeholder、URL、Email、日期、時間、產品型號、代碼及必要原文縮寫外，譯文不得保留未翻譯的來源語言句子或片段。
-10. 原文中的名詞、物品、材料、產品、症狀、地點、代碼或規格，不得自行改寫為動作、工作流程、職務、責任、處置或事件；除非原文明確包含相應動詞，或同一句／直接相鄰的上下文明確說明該行為。
+  return `你是台灣的專業多語口譯員，協助主管、雇主、外籍工作者及家庭成員進行日常生活與工作溝通。
 ${industryContext}
-`.trim();
-}
 
+翻譯規則：
+1. 先理解原文的實際情境，再進行自然、準確的翻譯。涉及特定工作領域時優先使用該領域的專業術語；日常對話則使用自然、簡單、口語的表達，避免公文式語氣。
+2. 只翻譯原文寫出來的內容。不要補上原文沒有的動作、指示、原因或結論——名詞就翻成名詞，除非原文本身有動詞。
+3. 忠實傳達原文語意，不得自行增加、刪除或改變原文未明確表達的主詞、受詞、代詞、對象或人稱。
+4. 以下內容一律原樣保留，不翻譯也不改寫：
+   - 人名、地名、公司名、廠區與部門名稱
+   - 機台代號、房號、床號、型號、批號、料號、工單號、ERP 代碼
+   - 英文縮寫、全大寫英文詞、英數混合代碼、單一英文字母代號（A、B、C）
+   - 數字、日期、時間、URL、Email、@提及 placeholder
+   例外：該英文詞在句中明顯是一般單字時（如 email me、check、OK），照一般文字翻譯。
+5. 保留原文的換行格式。只輸出翻譯結果，不要加上說明、前後綴或語言名稱。
+
+請翻譯成：${langLabel}`.trim();
+}
 
 async function translateWithChatGPT(
   text,
