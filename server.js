@@ -1068,7 +1068,8 @@ async function translateWithChatGPT(
   targetLang,
   gid = null,
   retry = 0,
-  customPrompt = ""
+  customPrompt = "",
+  modelName = "gpt-5.6-luna"
 ) {
   if (!text?.trim()) return text;
   if (isOnlyEmojiOrWhitespace(text)) return text;
@@ -1095,7 +1096,7 @@ async function translateWithChatGPT(
     const res = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-   model: "gpt-5.6-luna",
+   model: modelName,
        reasoning_effort: "none",
      max_completion_tokens: 1000,
         messages: [
@@ -1147,7 +1148,9 @@ async function translateWithChatGPT(
       });
 
       // 使用更嚴格的 prompt 重試一次
-      if (retry < 2) {
+      // Luna 的輸出語言不符合要求時，不再用 Luna 連續重試。
+// 直接改由較穩定的 gpt-4.1-mini 做一次 fallback。
+if (retry < 1) {
   const targetLanguageNames = {
     en: "English",
     th: "Thai",
@@ -1159,32 +1162,39 @@ async function translateWithChatGPT(
   const targetLanguageName =
     targetLanguageNames[targetLang] || targetLang;
 
-  const strongPrompt = `
+  const fallbackPrompt = `
 ${buildTranslationPrompt(targetLang, industry, true)}
 
 FINAL OUTPUT CORRECTION — MANDATORY:
-The previous response failed because it copied the source language instead of translating it.
+The previous response copied the source language instead of translating it.
 
-Translate the user's Chinese message into ${targetLanguageName} now.
+Translate the user's Chinese message into ${targetLanguageName}.
 
 Output requirements:
 - Output ONLY the ${targetLanguageName} translation.
-- Do NOT repeat or copy the Chinese source sentence.
+- Do NOT copy or repeat the Chinese source sentence.
 - Translate all repair actions, equipment names, fault descriptions, materials and instructions.
-- You may preserve only a short company name, factory name, place name, model number, code, quantity, phone number, date, time, URL, Email, or __MENTION_n__ placeholder.
-- If the source is Chinese, your output must contain substantial ${targetLanguageName} text.
-- Do not explain. Do not add a title. Do not return Chinese as the answer.
+- A short company name, factory name, place name, model number, code, quantity,
+  phone number, date, time, URL, Email, or __MENTION_n__ placeholder may remain unchanged.
+- If the source is Chinese, the output must contain substantial ${targetLanguageName} text.
+- Do not explain. Do not add a title.
 `.trim();
+
+  console.warn("↪️ Luna 輸出不合格，改用 gpt-4.1-mini fallback：", {
+    targetLang,
+    retry,
+    text
+  });
 
   return translateWithChatGPT(
     text,
     targetLang,
     gid,
     retry + 1,
-    strongPrompt
+    fallbackPrompt,
+    "gpt-4.1-mini"
   );
 }
-
 
       // 重試仍失敗，不要把錯語系內容貼出去
       if (targetLang === "zh-TW") {
