@@ -1094,31 +1094,29 @@ async function translateWithChatGPT(
 
   try {
     const res = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-   {
+  "https://api.openai.com/v1/chat/completions",
   {
-  model: modelName,
-  max_completion_tokens: 1000,
-  messages: [
-
-          {
-            role: "system",
-            content: systemPrompt
-          },
-          {
-            role: "user",
-            content: text
-          }
-        ]
+    model: modelName,
+    max_completion_tokens: 1000,
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt
       },
       {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-        },
-        timeout: 25000
+        role: "user",
+        content: text
       }
-    );
+    ]
+  },
+  {
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    timeout: 25000
+  }
+);
+
     let out =
       res.data?.choices?.[0]?.message?.content?.trim() || "";
 
