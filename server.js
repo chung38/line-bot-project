@@ -169,35 +169,48 @@ function isOutputValidForLang(out = "", targetLang = "") {
   const text = String(out).trim();
   if (!text) return false;
 
-  const hasChinese = /[\u4e00-\u9fff]/.test(text);
-  const hasLatin   = /[A-Za-z]/.test(text);
-  const hasThai    = /[\u0E00-\u0E7F]/.test(text);
-  const hasVietnam = /[\u0102-\u01B0\u1EA0-\u1EF9]/.test(text);
+  // 只保留各語言的文字；排除電話、數字、數量、符號與標點
+  const meaningful = text.replace(
+    /[^\p{L}]/gu,
+    ""
+  );
 
-  // 繁體中文：必須要有至少一個中文字
+  if (!meaningful) return false;
+
+  const chineseLen = (meaningful.match(/[\u4e00-\u9fff]/g) || []).length;
+  const thaiLen = (meaningful.match(/[\u0E00-\u0E7F]/g) || []).length;
+
+  // 英文、印尼文、越南文都使用拉丁字母
+  const latinLen = (
+    meaningful.match(/[A-Za-zÀ-ÖØ-öø-ÿ\u0102-\u01B0\u1EA0-\u1EF9]/g) || []
+  ).length;
+
+  const totalLen = meaningful.length || 1;
+  const chineseRatio = chineseLen / totalLen;
+
+  // 只有中文明顯是整段主體，才視為外語翻譯失敗。
+  // 因此允許保留少量中文的廠名、地名、客戶名或內部識別名稱。
+  const isChineseDominant =
+    chineseLen >= 4 &&
+    chineseRatio >= 0.45;
+
+  // 繁中：必須含中文
   if (targetLang === "zh-TW") {
-    return hasChinese;
+    return chineseLen > 0;
   }
 
-  // 印尼文：主要是拉丁字母，不應混入大量中文
-  if (targetLang === "id") {
-    return hasLatin && !hasChinese;
+  // 英文、越南文、印尼文：必須有拉丁文字，且不可以中文為主
+  if (["en", "vi", "id"].includes(targetLang)) {
+    return latinLen > 0 && !isChineseDominant;
   }
 
-  // 越南文：拉丁字母＋越南重音字，避免全中文
-  if (targetLang === "vi") {
-    return (hasLatin || hasVietnam) && !hasChinese;
-  }
-
-  // 泰文：必須出現泰文字元，且不應是純中文
+  // 泰文：必須有泰文，且不可以中文為主
   if (targetLang === "th") {
-    return hasThai && !hasChinese;
+    return thaiLen > 0 && !isChineseDominant;
   }
 
-  // 其他語言暫時不檢查
   return true;
 }
-
 
 function detectLang(text) {
   const cleaned = normalizeTextForLangDetect(text);
@@ -1039,8 +1052,8 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
    - 數字、日期、時間、URL、Email、@提及 placeholder
    例外：該英文詞在句中明顯是一般單字時（如 email me、check、OK），照一般文字翻譯。
 5. 保留原文的換行格式。只輸出翻譯結果，不要加上說明、前後綴或語言名稱。
-6. 輸出必須以目標語言完整表達。除前述必須原樣保留的代碼、數字、日期、時間、URL、Email 與 @提及 placeholder 外，不得保留原文中的中文詞句、中文姓名、中文地名、中文廠名或中文產品名稱。
-
+6. 公司名稱、客戶名稱、地點名稱、廠區名稱、站所名稱、產品名稱或其他專有識別名稱，
+若沒有可靠、常用的目標語言名稱，可以原樣保留；其餘描述、動作、故障情況、維修項目與指示，必須翻譯為目標語言。
 
 ${industryContext}
 ${zhRule}
