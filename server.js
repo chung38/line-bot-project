@@ -1231,12 +1231,14 @@ Output requirements:
       await new Promise(resolve => setTimeout(resolve, delay));
 
       return translateWithChatGPT(
-        text,
-        targetLang,
-        gid,
-        retry + 1,
-        customPrompt
-      );
+  text,
+  targetLang,
+  gid,
+  retry + 1,
+  customPrompt,
+  modelName
+);
+
     }
 
     return `[${text.substring(0, 20)}...翻譯失敗]`;
