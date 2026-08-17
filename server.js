@@ -2642,7 +2642,19 @@ if (event.message?.mention) {
     if (isOnlyEmojiOrWhitespace(normalizedForDetect)) return null;
     if (isSymbolOrNum(normalizedForDetect)) return null;
     // 單一英文字母通常是尺寸、代號、表格欄位或設備標記；不翻譯、不回覆。
-if (/^[A-Za-z]$/.test(normalizedForDetect)) return null;
+if (
+  /^[A-Za-z]$/.test(normalizedForDetect) ||
+  (
+    /^[A-Za-z0-9_-]{2,10}$/.test(normalizedForDetect) &&
+    (
+      /\d/.test(normalizedForDetect) ||
+      normalizedForDetect === normalizedForDetect.toUpperCase()
+    )
+  )
+) {
+  return null;
+}
+
 
     const sourceLang = detectLang(normalizedForDetect);
 
