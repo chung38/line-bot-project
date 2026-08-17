@@ -1096,10 +1096,14 @@ async function translateWithChatGPT(
     const res = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-   model: modelName,
-       reasoning_effort: "none",
-     max_completion_tokens: 1000,
-        messages: [
+   {
+  model: modelName,
+  ...(modelName === "gpt-5.6-luna"
+    ? { reasoning_effort: "none" }
+    : {}),
+  max_completion_tokens: 1000,
+  messages: [
+
           {
             role: "system",
             content: systemPrompt
@@ -1222,7 +1226,7 @@ Output requirements:
       e.code === "ETIMEDOUT" ||
       [429, 500, 502, 503].includes(e.response?.status);
 
-    if (isRetryable && retry < 2) {
+    if (isRetryable && retry < 1) {
       const delay = Math.min(
         1000 * Math.pow(2, retry),
         5000
