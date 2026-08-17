@@ -1148,16 +1148,43 @@ async function translateWithChatGPT(
 
       // 使用更嚴格的 prompt 重試一次
       if (retry < 2) {
-        const strongPrompt = buildTranslationPrompt(targetLang, industry, true);
+  const targetLanguageNames = {
+    en: "English",
+    th: "Thai",
+    vi: "Vietnamese",
+    id: "Bahasa Indonesia",
+    "zh-TW": "Traditional Chinese"
+  };
 
-        return translateWithChatGPT(
-          text,
-          targetLang,
-          gid,
-          retry + 1,
-          strongPrompt
-        );
-      }
+  const targetLanguageName =
+    targetLanguageNames[targetLang] || targetLang;
+
+  const strongPrompt = `
+${buildTranslationPrompt(targetLang, industry, true)}
+
+FINAL OUTPUT CORRECTION — MANDATORY:
+The previous response failed because it copied the source language instead of translating it.
+
+Translate the user's Chinese message into ${targetLanguageName} now.
+
+Output requirements:
+- Output ONLY the ${targetLanguageName} translation.
+- Do NOT repeat or copy the Chinese source sentence.
+- Translate all repair actions, equipment names, fault descriptions, materials and instructions.
+- You may preserve only a short company name, factory name, place name, model number, code, quantity, phone number, date, time, URL, Email, or __MENTION_n__ placeholder.
+- If the source is Chinese, your output must contain substantial ${targetLanguageName} text.
+- Do not explain. Do not add a title. Do not return Chinese as the answer.
+`.trim();
+
+  return translateWithChatGPT(
+    text,
+    targetLang,
+    gid,
+    retry + 1,
+    strongPrompt
+  );
+}
+
 
       // 重試仍失敗，不要把錯語系內容貼出去
       if (targetLang === "zh-TW") {
