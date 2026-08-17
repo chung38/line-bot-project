@@ -1039,6 +1039,8 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
    - 數字、日期、時間、URL、Email、@提及 placeholder
    例外：該英文詞在句中明顯是一般單字時（如 email me、check、OK），照一般文字翻譯。
 5. 保留原文的換行格式。只輸出翻譯結果，不要加上說明、前後綴或語言名稱。
+6. 輸出必須以目標語言完整表達。除前述必須原樣保留的代碼、數字、日期、時間、URL、Email 與 @提及 placeholder 外，不得保留原文中的中文詞句、中文姓名、中文地名、中文廠名或中文產品名稱。
+
 
 ${industryContext}
 ${zhRule}
