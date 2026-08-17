@@ -2641,6 +2641,8 @@ if (event.message?.mention) {
     if (!normalizedForDetect.trim()) return null;
     if (isOnlyEmojiOrWhitespace(normalizedForDetect)) return null;
     if (isSymbolOrNum(normalizedForDetect)) return null;
+    // 單一英文字母通常是尺寸、代號、表格欄位或設備標記；不翻譯、不回覆。
+if (/^[A-Za-z]$/.test(normalizedForDetect)) return null;
 
     const sourceLang = detectLang(normalizedForDetect);
 
