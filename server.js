@@ -1028,16 +1028,20 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
       ? `工作類型：${industry}。僅在原文明確涉及此領域時，使用常用、清楚的術語。`
       : "");
 
-  const zhRule =
-    forceStrict && targetLang === "zh-TW"
-      ? `
-繁體中文要求：
-- 使用符合台灣用語習慣的繁體中文。
-- 可以自然表達，但不可為了通順而改變原意。
-- 人稱或指涉不明時，不可自行翻成「我自己」、「你自己」或「他自己」。
-- 不可直接照抄外語原文。
-- 若原文不是中文，譯文必須包含繁體中文；型號、代碼、日期、時間與 placeholder 除外。`
-      : "";
+  const targetLanguageRule = forceStrict
+  ? `
+強制輸出語言規則：
+- 本次目標語言是「${langLabel}」。
+- 必須將原文中可翻譯的內容完整翻譯為「${langLabel}」。
+- 不得直接照抄原文，不得輸出以中文為主的內容。
+- 公司名稱、客戶名稱、廠區名稱、地名、站所名稱、產品名稱或內部識別名稱，
+  若沒有可靠的常用譯名，可以保留原樣。
+- 但是故障情況、維修動作、設備零件、材料、數量描述、工作指示與一般名詞，
+  一律必須翻譯成「${langLabel}」。
+- 除機台代號、型號、批號、料號、工單號、ERP 代碼、數字、日期、時間、
+  URL、Email、@提及 placeholder 外，不得保留整句中文原文。
+- 只輸出翻譯結果，不要解釋、不要加標題、不要說明翻譯規則。`
+  : "";
 
   return `
 你是專業即時翻譯引擎。將原文翻譯成「${langLabel}」。
@@ -1056,7 +1060,7 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 若沒有可靠、常用的目標語言名稱，可以原樣保留；其餘描述、動作、故障情況、維修項目與指示，必須翻譯為目標語言。
 
 ${industryContext}
-${zhRule}
+${targetLanguageRule}
 `.trim();
 }
 async function translateWithChatGPT(
