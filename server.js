@@ -1028,9 +1028,8 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
       ? `工作類型：${industry}。僅在原文明確涉及此領域時，使用常用、清楚的術語。`
       : "");
 
-  const targetLanguageRule = forceStrict
-  ? `
-強制輸出語言規則：
+  const targetLanguageRule = `
+輸出語言規則：
 - 本次目標語言是「${langLabel}」。
 - 必須將原文中可翻譯的內容完整翻譯為「${langLabel}」。
 - 不得直接照抄原文，不得輸出以中文為主的內容。
@@ -1040,8 +1039,9 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   一律必須翻譯成「${langLabel}」。
 - 除機台代號、型號、批號、料號、工單號、ERP 代碼、數字、日期、時間、
   URL、Email、@提及 placeholder 外，不得保留整句中文原文。
-- 只輸出翻譯結果，不要解釋、不要加標題、不要說明翻譯規則。`
-  : "";
+- 只輸出翻譯結果，不要解釋、不要加標題、不要說明翻譯規則。
+`.trim();
+
 
   return `
 你是專業即時翻譯引擎。將原文翻譯成「${langLabel}」。
