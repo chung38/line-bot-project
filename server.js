@@ -164,6 +164,39 @@ function normalizeTextForLangDetect(text) {
     .replace(/\s+/g, " ")
     .trim();
 }
+// 檢查輸出是否符合目標語言的字元特徵
+function isOutputValidForLang(out = "", targetLang = "") {
+  const text = String(out).trim();
+  if (!text) return false;
+
+  const hasChinese = /[\u4e00-\u9fff]/.test(text);
+  const hasLatin   = /[A-Za-z]/.test(text);
+  const hasThai    = /[\u0E00-\u0E7F]/.test(text);
+  const hasVietnam = /[\u0102-\u01B0\u1EA0-\u1EF9]/.test(text);
+
+  // 繁體中文：必須要有至少一個中文字
+  if (targetLang === "zh-TW") {
+    return hasChinese;
+  }
+
+  // 印尼文：主要是拉丁字母，不應混入大量中文
+  if (targetLang === "id") {
+    return hasLatin && !hasChinese;
+  }
+
+  // 越南文：拉丁字母＋越南重音字，避免全中文
+  if (targetLang === "vi") {
+    return (hasLatin || hasVietnam) && !hasChinese;
+  }
+
+  // 泰文：必須出現泰文字元，且不應是純中文
+  if (targetLang === "th") {
+    return hasThai && !hasChinese;
+  }
+
+  // 其他語言暫時不檢查
+  return true;
+}
 
 
 function detectLang(text) {
@@ -1064,7 +1097,6 @@ async function translateWithChatGPT(
         timeout: 25000
       }
     );
-
     let out =
       res.data?.choices?.[0]?.message?.content?.trim() || "";
 
@@ -1074,65 +1106,51 @@ async function translateWithChatGPT(
       .join("\n")
       .trim();
 
-// 繁中翻譯輸出檢查
-// 繁中翻譯輸出檢查
-if (targetLang === "zh-TW") {
-  const hasChinese = /[\u4E00-\u9FFF]/.test(out);
-  const unchanged = out.trim() === text.trim();
-  const sourceHasChinese = /[\u4E00-\u9FFF]/.test(text);
+    // 共用輸出語系檢查 ＋ 繁中特殊處理
+    const unchanged = out.trim() === text.trim();
+    const sourceHasChinese = /[\u4e00-\u9fff]/.test(text);
 
-  // 關鍵原則：
-  // 翻譯成繁中，只檢查「是否有產出中文」。
-  // 不可因譯文保留泰文姓名／專有名詞，就誤判為翻譯失敗。
-  const invalidZhTranslation =
-    !sourceHasChinese &&
-    !hasChinese;
+    // 原本就是中文，且目標也是繁中，AI 原樣輸出 → 視為正常（人名、型號、代碼等）
+    if (targetLang === "zh-TW" && unchanged && sourceHasChinese) {
+      translationCache.set(cacheKey, out);
+      return out;
+    }
 
-  if (invalidZhTranslation) {
-    console.warn("⚠️ 繁中翻譯未產出中文，準備重試：", {
-      retry,
-      text,
-      out,
-      hasChinese
-    });
+    // 檢查輸出是否符合目標語言的字元特徵
+    const isValid = isOutputValidForLang(out, targetLang);
 
-    if (retry < 2) {
-  const retryPrompt = `
-${buildTranslationPrompt("zh-TW", industry, true)}
+    if (!isValid) {
+      console.warn("⚠️ 翻譯輸出語系不符合目標語言，準備重試：", {
+        targetLang,
+        retry,
+        text,
+        out
+      });
 
-這是一次翻譯修正重試。
-上一輪輸出錯誤地保留了來源語言原文。
+      // 使用更嚴格的 prompt 重試一次
+      if (retry < 2) {
+        const strongPrompt = buildTranslationPrompt(targetLang, industry, true);
 
-你現在必須將使用者訊息完整翻譯成繁體中文。
-除人名、產品型號、代碼、日期、時間、網址、Email 與 placeholder 外，
-輸出中不得保留泰文、越南文、印尼文或英文原句。
-只輸出繁體中文譯文。
-`.trim();
+        return translateWithChatGPT(
+          text,
+          targetLang,
+          gid,
+          retry + 1,
+          strongPrompt
+        );
+      }
 
-  return translateWithChatGPT(
-    text,
-    targetLang,
-    gid,
-    retry + 1,
-    retryPrompt
-  );
-}
-
-
-    // 重試兩次仍沒有中文，才顯示錯誤。
-    // 不可把原始泰文偽裝為繁中翻譯。
-    out = "（繁中翻譯異常，請稍後再試）";
-  }
-
-  // 原本就是中文，且 AI 原樣輸出，屬於正常。
-  if (unchanged && sourceHasChinese) {
-    translationCache.set(cacheKey, out);
-    return out;
-  }
-}
+      // 重試仍失敗，不要把錯語系內容貼出去
+      if (targetLang === "zh-TW") {
+        out = "（繁中翻譯異常，請稍後再試）";
+      } else {
+        out = "（翻譯異常，請稍後再試）";
+      }
+    }
 
     translationCache.set(cacheKey, out);
     return out;
+
 
   } catch (e) {
     const errMsg =
