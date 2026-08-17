@@ -1097,10 +1097,8 @@ async function translateWithChatGPT(
       "https://api.openai.com/v1/chat/completions",
       {
    {
+  {
   model: modelName,
-  ...(modelName === "gpt-5.6-luna"
-    ? { reasoning_effort: "none" }
-    : {}),
   max_completion_tokens: 1000,
   messages: [
 
