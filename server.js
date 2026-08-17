@@ -1023,7 +1023,7 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 - 可以自然表達，但不可為了通順而改變原意。
 - 人稱或指涉不明時，不可自行翻成「我自己」、「你自己」或「他自己」。
 - 不可直接照抄外語原文。
-- 若原文不是中文，譯文必須包含繁體中文；人名、型號、代碼、日期、時間與 placeholder 除外。`
+- 若原文不是中文，譯文必須包含繁體中文；型號、代碼、日期、時間與 placeholder 除外。`
       : "";
 
   return `
