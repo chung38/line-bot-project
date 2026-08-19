@@ -55,9 +55,42 @@ const lineConfig = {
 const client = new Client(lineConfig);
 
 const translationCache = new LRUCache({
-  max: 800,
+  max: 2000,
   ttl: 24 * 60 * 60 * 1000
 });
+
+// 每則訊息都會查的資料，用短 TTL 快取，避免重複打 Firestore / LINE API
+const subscriptionCache = new LRUCache({
+  max: 500,
+  ttl: 60 * 1000
+});
+
+const usageCache = new LRUCache({
+  max: 500,
+  ttl: 30 * 1000
+});
+
+const displayNameCache = new LRUCache({
+  max: 2000,
+  ttl: 6 * 60 * 60 * 1000
+});
+
+const groupSummaryCache = new LRUCache({
+  max: 500,
+  ttl: 10 * 60 * 1000
+});
+
+// 行業別主檔：後台會頻繁呼叫 loadIndustryMaster()，加上節流避免整個 collection 重讀
+let industryMasterLoadedAt = 0;
+const INDUSTRY_MASTER_TTL = 60 * 1000;
+
+// 逾時參數集中管理。單次 OpenAI 呼叫 × 2（主模型 + fallback）必須小於總逾時，
+// 否則 fallback 還沒回來整批就已經被判逾時。
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 20000);
+const TRANSLATION_TOTAL_TIMEOUT_MS = Number(process.env.TRANSLATION_TIMEOUT_MS || 45000);
+
+// mention 還原等細節記錄只在需要時開啟，正式環境不要洗版
+const DEBUG_TRANSLATION = process.env.DEBUG_TRANSLATION === "1";
 
 const groupLang = new Map();
 const groupInviter = new Map();
@@ -144,7 +177,11 @@ function hasChinese(txt = "") {
 
 function isOnlyEmojiOrWhitespace(txt = "") {
   if (!txt) return true;
-  const stripped = txt.replace(/[（(][\u4e00-\u9fff\w\s]+[）)]/g, "").trim();
+
+  // 只在「括號外還有其他內容」時才把括號註解剝掉。
+  // 否則像「（今天休假）」這種整句包在括號裡的訊息會被誤判成純表情而整則跳過。
+  const parenRemoved = txt.replace(/[（(][\u4e00-\u9fff\w\s]+[）)]/g, "").trim();
+  const stripped = parenRemoved || txt.trim();
   if (!stripped) return true;
 
   let s = stripped.replace(/[\s.,!?，。？！、:：;；"'"'（）【】《》\[\]()]/g, "");
@@ -199,9 +236,36 @@ function isOutputValidForLang(out = "", targetLang = "") {
     return chineseLen > 0;
   }
 
-  // 英文、越南文、印尼文：必須有拉丁文字，且不可以中文為主
-  if (["en", "vi", "id"].includes(targetLang)) {
-    return latinLen > 0 && !isChineseDominant;
+  // 拉丁字母系語言（en / vi / id）共用同一套字元，
+  // 只檢查「有沒有拉丁字母」等於沒有檢查 —— 越南文輸出成英文一樣會過關。
+  // 因此對 vi / id 額外要求該語言的特徵，避免錯語言直接貼進群組。
+  if (targetLang === "vi") {
+    if (latinLen === 0 || isChineseDominant) return false;
+    const viDiacritics = (meaningful.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+    const viWords = (
+      text.match(/\b(và|của|là|không|được|các|cho|này|với|người|đã|sẽ|khi|nếu|thì|tại|trong|ngày|giờ|làm|việc|máy)\b/gi) || []
+    ).length;
+    // 純代號／型號等短輸出（無小寫字母）不做語言特徵要求
+    const looksLikeCode = /^[A-Z0-9\s\-_/.]+$/.test(text);
+    return looksLikeCode || viDiacritics >= 1 || viWords >= 1;
+  }
+
+  if (targetLang === "id") {
+    if (latinLen === 0 || isChineseDominant) return false;
+    const idWords = (
+      text.match(/\b(dan|yang|untuk|dengan|tidak|ini|itu|adalah|akan|dari|ke|di|pada|sudah|harus|bisa|jam|hari|kerja|mesin|tolong|silakan)\b/gi) || []
+    ).length;
+    const looksLikeCode = /^[A-Z0-9\s\-_/.]+$/.test(text);
+    return looksLikeCode || idWords >= 1;
+  }
+
+  if (targetLang === "en") {
+    if (latinLen === 0 || isChineseDominant) return false;
+    // 英文不應該帶大量越南文聲調字元或泰文
+    const viDiacritics = (meaningful.match(/[\u1EA0-\u1EF9]/g) || []).length;
+    if (thaiLen > 0) return false;
+    if (viDiacritics >= 2) return false;
+    return true;
   }
 
   // 泰文：必須有泰文，且不可以中文為主
@@ -230,9 +294,22 @@ function detectLang(text) {
 
   if (thaiRatio > 0.2 || thaiLen >= 4) return "th";
 
+  // 越南文判斷：原本單一關鍵字命中就回傳 vi，但 da / ca / mai / toi / on / sang / nay
+  // 在英文與印尼文句子中很常見，容易誤判。改成需要足夠證據才成立。
+  const viStrongHits = (
+    cleaned.match(/\b(anh|chi|em|oi|roi|duoc|khong|ko|lam|chieu|hom|vang|xin|cam|biet|viec|ngay|gio|nghi|tang)\b/gi) || []
+  ).length;
+
+  // on / sang / nay 本身就是常見英文單字，留在清單裡會把英文句子判成越南文，
+  // 因此完全移除；其餘弱訊號字要湊滿兩個才成立。
+  const viWeakHits = (
+    cleaned.match(/\b(toi|mai|da|ca|hom|chieu)\b/gi) || []
+  ).length;
+
   if (
-    /\b(anh|chi|em|oi|roi|duoc|khong|ko|lam|sang|chieu|toi|mai|hom|nay|vang|da|xin|cam|on|biet|viec|ngay|gio|nghi|tang|ca)\b/i.test(cleaned) ||
-    viCharLen >= 2
+    viCharLen >= 2 ||
+    viStrongHits >= 1 ||
+    viWeakHits >= 2
   ) {
     return "vi";
   }
@@ -337,9 +414,11 @@ function extractMentionsFromLineMessage(message) {
     masked = masked.slice(0, m.start) + key + masked.slice(m.end);
   }
 
-  console.log("RAW official mention:", JSON.stringify(message.mention));
-  console.log("masked after official replace:", masked);
-  console.log("segments:", JSON.stringify(segments));
+  if (DEBUG_TRANSLATION) {
+    console.log("RAW official mention:", JSON.stringify(message.mention));
+    console.log("masked after official replace:", masked);
+    console.log("segments:", JSON.stringify(segments));
+  }
 
   return {
     masked,
@@ -496,27 +575,36 @@ async function getSubscriptionByUserId(userId) {
   return doc.exists ? doc.data() : null;
 }
 
-async function getMonthlyUsage(userId, monthKey = getMonthKey()) {
+async function getMonthlyUsage(userId, monthKey = getMonthKey(), { useCache = false } = {}) {
   const normalizedMonthKey = normalizeMonthKey(monthKey);
   const id = `${userId}_${normalizedMonthKey}`;
-  const doc = await db.collection("usageMonthly").doc(id).get();
 
-  if (!doc.exists) {
-    return {
-      userId,
-      monthKey: normalizedMonthKey,
-      translationCount: 0,
-      charCount: 0,
-    };
+  if (useCache && usageCache.has(id)) {
+    return usageCache.get(id);
   }
 
-  return doc.data();
+  const doc = await db.collection("usageMonthly").doc(id).get();
+
+  const data = doc.exists
+    ? doc.data()
+    : {
+        userId,
+        monthKey: normalizedMonthKey,
+        translationCount: 0,
+        charCount: 0,
+      };
+
+  if (useCache) usageCache.set(id, data);
+  return data;
 }
 
 async function incrementMonthlyUsage(userId, translationCount = 1, charCount = 0) {
   if (!userId) return;
   const monthKey = getMonthKey();
   const ref = db.collection("usageMonthly").doc(`${userId}_${monthKey}`);
+
+  // 寫入後讓快取失效，避免額度判斷讀到過期數字
+  usageCache.delete(`${userId}_${monthKey}`);
 
   await ref.set(
     {
@@ -529,6 +617,8 @@ async function incrementMonthlyUsage(userId, translationCount = 1, charCount = 0
     },
     { merge: true }
   );
+
+  usageCache.delete(`${userId}_${monthKey}`);
 }
 
 async function countGroupsByInviter(userId) {
@@ -537,12 +627,23 @@ async function countGroupsByInviter(userId) {
   return snap.size;
 }
 
-async function ensureSubscriptionDoc(userId) {
+function invalidateSubscriptionCache(userId) {
+  if (userId) subscriptionCache.delete(userId);
+}
+
+async function ensureSubscriptionDoc(userId, { useCache = false } = {}) {
   if (!userId) return null;
+
+  if (useCache && subscriptionCache.has(userId)) {
+    return subscriptionCache.get(userId);
+  }
 
   const ref = db.collection("userSubscriptions").doc(userId);
   const doc = await ref.get();
-  if (doc.exists) return doc.data();
+  if (doc.exists) {
+    if (useCache) subscriptionCache.set(userId, doc.data());
+    return doc.data();
+  }
 
   const defaults = await getSubscriptionDefaults();
   const now = new Date();
@@ -566,6 +667,7 @@ async function ensureSubscriptionDoc(userId) {
   };
 
   await ref.set(initData, { merge: true });
+  subscriptionCache.set(userId, initData);
   return initData;
 }
 async function getBoundGroupsByInviter(userId) {
@@ -614,7 +716,9 @@ async function canUseGroup(gid) {
     return { ok: false, code: "NO_INVITER", message: "此群組尚未綁定授權者。" };
   }
 
-  const sub = await ensureSubscriptionDoc(inviterUserId);
+  // 這個函式每則訊息都會跑，訂閱狀態與用量都走短 TTL 快取，
+  // 避免每則訊息固定兩次 Firestore read。
+  const sub = await ensureSubscriptionDoc(inviterUserId, { useCache: true });
   const now = new Date();
 
   if (sub.manualOverride === MANUAL_OVERRIDE.FORCE_INACTIVE) {
@@ -631,7 +735,7 @@ async function canUseGroup(gid) {
     return { ok: true, code: "FORCE_ACTIVE", inviterUserId, sub };
   }
 
-  const usage = await getMonthlyUsage(inviterUserId);
+  const usage = await getMonthlyUsage(inviterUserId, getMonthKey(), { useCache: true });
 
   if (sub.monthlyQuota > 0 && (usage.translationCount || 0) >= sub.monthlyQuota) {
     return {
@@ -736,6 +840,7 @@ async function activatePaidSubscription(userId, options = {}) {
   }
 
   await ref.set(payload, { merge: true });
+  invalidateSubscriptionCache(userId);
 }
 
 async function markPaymentFailed(userId) {
@@ -756,6 +861,7 @@ async function markPaymentFailed(userId) {
       },
       { merge: true }
     );
+    invalidateSubscriptionCache(userId);
     return;
   }
 
@@ -768,6 +874,7 @@ async function markPaymentFailed(userId) {
     },
     { merge: true }
   );
+  invalidateSubscriptionCache(userId);
 }
 
 
@@ -818,12 +925,43 @@ async function ensureInviterIfMissing(gid, uid) {
 
 async function getGroupMemberDisplayName(gid, uid) {
   if (!gid || !uid) return uid || "未知使用者";
+
+  const cacheKey = `${gid}:${uid}`;
+  const cached = displayNameCache.get(cacheKey);
+  if (cached) return cached;
+
   try {
     const profile = await client.getGroupMemberProfile(gid, uid);
-    return profile.displayName || uid;
+    const name = profile.displayName || uid;
+    displayNameCache.set(cacheKey, name);
+    return name;
   } catch {
     return uid;
   }
+}
+
+async function getGroupSummaryCached(gid) {
+  if (!gid) return null;
+  if (groupSummaryCache.has(gid)) return groupSummaryCache.get(gid);
+
+  const result = { groupName: null, memberCount: null };
+
+  try {
+    const summary = await client.getGroupSummary(gid);
+    result.groupName = summary?.groupName || null;
+  } catch (e) {
+    console.warn("取得群組名稱失敗:", gid, e.message);
+  }
+
+  try {
+    const countRes = await client.getGroupMembersCount(gid);
+    result.memberCount = countRes?.count ?? null;
+  } catch (e) {
+    console.warn("取得群組人數失敗:", gid, e.message);
+  }
+
+  groupSummaryCache.set(gid, result);
+  return result;
 }
 async function getUserDisplayNameByUserId(userId) {
   if (!userId) return null;
@@ -899,6 +1037,59 @@ async function safeReplyOrPush(replyToken, gid, text) {
     return false;
   }
 }
+// LINE 文字訊息上限 5000 字元，留一點安全邊界。
+// 超過上限時整則 API 呼叫會失敗，翻譯就整個消失。
+const LINE_TEXT_LIMIT = 4800;
+
+function splitTextForLine(text, limit = LINE_TEXT_LIMIT) {
+  if (text.length <= limit) return [text];
+
+  const chunks = [];
+  let buffer = "";
+
+  for (const line of text.split("\n")) {
+    // 單行本身就超長，硬切
+    if (line.length > limit) {
+      if (buffer) {
+        chunks.push(buffer);
+        buffer = "";
+      }
+      for (let i = 0; i < line.length; i += limit) {
+        chunks.push(line.slice(i, i + limit));
+      }
+      continue;
+    }
+
+    if (buffer.length + line.length + 1 > limit) {
+      chunks.push(buffer);
+      buffer = line;
+    } else {
+      buffer = buffer ? `${buffer}\n${line}` : line;
+    }
+  }
+
+  if (buffer) chunks.push(buffer);
+  return chunks;
+}
+
+async function sendLongText(replyToken, gid, text) {
+  const chunks = splitTextForLine(text);
+
+  const ok = await safeReplyOrPush(replyToken, gid, chunks[0]);
+
+  for (let i = 1; i < chunks.length; i++) {
+    if (!gid) break;
+    try {
+      await client.pushMessage(gid, { type: "text", text: chunks[i] });
+    } catch (e) {
+      console.error("LINE Push 續傳失敗：", e.response?.data || e.message);
+      break;
+    }
+  }
+
+  return ok;
+}
+
 async function loadLang() {
   const snapshot = await db.collection("groupLanguages").get();
   snapshot.forEach(doc => {
@@ -925,8 +1116,14 @@ async function loadIndustry() {
 
 let industryContextMap = new Map(); // name → promptContext
 
-async function loadIndustryMaster() {
+async function loadIndustryMaster({ force = false } = {}) {
+  // 後台多支 API 都會呼叫這支，沒有節流的話等於每次請求都重讀整個 collection
+  if (!force && Date.now() - industryMasterLoadedAt < INDUSTRY_MASTER_TTL) {
+    return;
+  }
+
   const snapshot = await db.collection("systemIndustries").get();
+  industryMasterLoadedAt = Date.now();
   industryMasterDocs = snapshot.docs.map(doc => ({
     id: doc.id,
     ...doc.data()
@@ -999,6 +1196,7 @@ async function deleteGroupSettings(gid) {
   groupLang.delete(gid);
   groupInviter.delete(gid);
   groupIndustry.delete(gid);
+  groupSummaryCache.delete(gid);
   deletedGroups.add(gid);
 }
 
@@ -1063,18 +1261,41 @@ ${industryContext}
 ${targetLanguageRule}
 `.trim();
 }
+const LANG_ENGLISH_NAMES = {
+  en: "English",
+  th: "Thai",
+  vi: "Vietnamese",
+  id: "Bahasa Indonesia",
+  "zh-TW": "Traditional Chinese"
+};
+
+function buildTranslationCacheKey(text, targetLang, industry, systemPrompt) {
+  // 原本的 key 帶了 gid 和整段 systemPrompt：
+  //  - gid 讓「同行業別、不同群組」無法共用快取，命中率大幅下降
+  //  - systemPrompt 完全由 targetLang + industry 決定，是冗餘資訊，還讓每筆 key 多背 1KB
+  const promptHash = crypto
+    .createHash("sha1")
+    .update(systemPrompt)
+    .digest("hex")
+    .slice(0, 8);
+
+  return `${targetLang}:${industry || ""}:${promptHash}:${text}`;
+}
+
 async function translateWithChatGPT(
   text,
   targetLang,
   gid = null,
   retry = 0,
   customPrompt = "",
-  modelName = "gpt-5.6-luna"
+  modelName = "gpt-5.6-luna",
+  options = {}
 ) {
   if (!text?.trim()) return text;
   if (isOnlyEmojiOrWhitespace(text)) return text;
 
   const industry = gid ? groupIndustry.get(gid) : null;
+  const sourceLang = options.sourceLang || null;
 
   // 所有翻譯為繁中的訊息，都直接啟用繁中嚴格規則
   const systemPrompt =
@@ -1085,8 +1306,11 @@ async function translateWithChatGPT(
       targetLang === "zh-TW"
     );
 
-  const cacheKey =
-    `group_${gid}:${targetLang}:${text}:${industry || ""}:${systemPrompt}`;
+  const cacheKey = buildTranslationCacheKey(text, targetLang, industry, systemPrompt);
+
+  // fallback 成功時，結果要同時寫回「原始 key」，
+  // 否則同一句話下次進來還是會先讓主模型失敗一次，等於長期付雙倍成本。
+  const primaryCacheKey = options.primaryCacheKey || cacheKey;
 
   if (translationCache.has(cacheKey)) {
     return translationCache.get(cacheKey);
@@ -1113,7 +1337,7 @@ async function translateWithChatGPT(
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
     },
-    timeout: 25000
+    timeout: OPENAI_TIMEOUT_MS
   }
 );
 
@@ -1133,6 +1357,7 @@ async function translateWithChatGPT(
     // 原本就是中文，且目標也是繁中，AI 原樣輸出 → 視為正常（人名、型號、代碼等）
     if (targetLang === "zh-TW" && unchanged && sourceHasChinese) {
       translationCache.set(cacheKey, out);
+      if (primaryCacheKey !== cacheKey) translationCache.set(primaryCacheKey, out);
       return out;
     }
 
@@ -1147,64 +1372,68 @@ async function translateWithChatGPT(
         out
       });
 
-      // 使用更嚴格的 prompt 重試一次
-      // Luna 的輸出語言不符合要求時，不再用 Luna 連續重試。
-// 直接改由較穩定的 gpt-4.1-mini 做一次 fallback。
-if (retry < 1) {
-  const targetLanguageNames = {
-    en: "English",
-    th: "Thai",
-    vi: "Vietnamese",
-    id: "Bahasa Indonesia",
-    "zh-TW": "Traditional Chinese"
-  };
+      // Luna 的輸出語言不符合要求時，不再用 Luna 連續重試，
+      // 直接改由較穩定的 gpt-4.1-mini 做一次 fallback。
+      if (retry < 1) {
+        const targetLanguageName = LANG_ENGLISH_NAMES[targetLang] || targetLang;
 
-  const targetLanguageName =
-    targetLanguageNames[targetLang] || targetLang;
+        // 原本這段寫死「the user's Chinese message」，
+        // 但泰文／越南文原文翻成繁中時也會走到這裡，提示語言就是錯的。
+        const sourceLanguageName = sourceLang
+          ? (LANG_ENGLISH_NAMES[sourceLang] || sourceLang)
+          : null;
 
-  const fallbackPrompt = `
+        const sourceClause = sourceLanguageName
+          ? `The source message is in ${sourceLanguageName}.`
+          : "";
+
+        const fallbackPrompt = `
 ${buildTranslationPrompt(targetLang, industry, true)}
 
 FINAL OUTPUT CORRECTION — MANDATORY:
-The previous response copied the source language instead of translating it.
+The previous response failed to translate: it echoed the source language
+or produced a different language than requested.
 
-Translate the user's Chinese message into ${targetLanguageName}.
+Translate the user's message into ${targetLanguageName}. ${sourceClause}
 
 Output requirements:
 - Output ONLY the ${targetLanguageName} translation.
-- Do NOT copy or repeat the Chinese source sentence.
+- Do NOT copy or repeat the source sentence in its original language.
+- Do NOT answer in any language other than ${targetLanguageName}.
 - Translate all repair actions, equipment names, fault descriptions, materials and instructions.
 - A short company name, factory name, place name, model number, code, quantity,
   phone number, date, time, URL, Email, or __MENTION_n__ placeholder may remain unchanged.
-- If the source is Chinese, the output must contain substantial ${targetLanguageName} text.
+- The output must contain substantial ${targetLanguageName} text.
 - Do not explain. Do not add a title.
 `.trim();
 
-  console.warn("↪️ Luna 輸出不合格，改用 gpt-4.1-mini fallback：", {
-    targetLang,
-    retry,
-    text
-  });
+        console.warn("↪️ Luna 輸出不合格，改用 gpt-4.1-mini fallback：", {
+          targetLang,
+          sourceLang,
+          retry,
+          text
+        });
 
-  return translateWithChatGPT(
-    text,
-    targetLang,
-    gid,
-    retry + 1,
-    fallbackPrompt,
-    "gpt-4.1-mini"
-  );
-}
-
-      // 重試仍失敗，不要把錯語系內容貼出去
-      if (targetLang === "zh-TW") {
-        out = "（繁中翻譯異常，請稍後再試）";
-      } else {
-        out = "（翻譯異常，請稍後再試）";
+        return translateWithChatGPT(
+          text,
+          targetLang,
+          gid,
+          retry + 1,
+          fallbackPrompt,
+          "gpt-4.1-mini",
+          { sourceLang, primaryCacheKey }
+        );
       }
+
+      // 重試仍失敗，不要把錯語系內容貼出去。
+      // 這種佔位字串不進快取，否則整整 24 小時都會回同一句錯誤訊息。
+      return targetLang === "zh-TW"
+        ? "（繁中翻譯異常，請稍後再試）"
+        : "（翻譯異常，請稍後再試）";
     }
 
     translationCache.set(cacheKey, out);
+    if (primaryCacheKey !== cacheKey) translationCache.set(primaryCacheKey, out);
     return out;
 
 
@@ -1231,21 +1460,21 @@ Output requirements:
       await new Promise(resolve => setTimeout(resolve, delay));
 
       return translateWithChatGPT(
-  text,
-  targetLang,
-  gid,
-  retry + 1,
-  customPrompt,
-  modelName
-);
-
+        text,
+        targetLang,
+        gid,
+        retry + 1,
+        customPrompt,
+        modelName,
+        { sourceLang, primaryCacheKey }
+      );
     }
 
     return `[${text.substring(0, 20)}...翻譯失敗]`;
   }
 }
 
-async function translateLineSegments(line, targetLang, gid, segments) {
+async function translateLineSegments(line, targetLang, gid, segments, sourceLang = null) {
     const lineWithoutMentions = line.replace(/__MENTION_\d+__/g, "").trim();
   if (!lineWithoutMentions) {
     return restoreMentions(line, segments);  // 直接還原，不翻譯
@@ -1286,7 +1515,7 @@ if (beforeUrl.trim()) {
   if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl.trim())) {
     outLine += beforeUrl;
   } else {
-    outLine += leadingSpace + (await translateWithChatGPT(beforeUrl.trim(), targetLang, gid)).trim() + trailingSpace;
+    outLine += leadingSpace + (await translateWithChatGPT(beforeUrl.trim(), targetLang, gid, 0, "", "gpt-5.6-luna", { sourceLang })).trim() + trailingSpace;
   }
 }
 outLine += urlMatch[0];
@@ -1300,19 +1529,21 @@ if (afterLastUrl.trim()) {
   if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl.trim())) {
     outLine += afterLastUrl;
   } else {
-    outLine += leadingSpace + (await translateWithChatGPT(afterLastUrl.trim(), targetLang, gid)).trim() + trailingSpace;
+    outLine += leadingSpace + (await translateWithChatGPT(afterLastUrl.trim(), targetLang, gid, 0, "", "gpt-5.6-luna", { sourceLang })).trim() + trailingSpace;
   }
 }
   }
 const restored = restoreMentions(outLine, segments);
 
-console.log("🔎 mention restore check:", {
-  targetLang,
-  originalLine: line,
-  beforeRestore: outLine,
-  segments,
-  afterRestore: restored
-});
+if (DEBUG_TRANSLATION) {
+  console.log("🔎 mention restore check:", {
+    targetLang,
+    originalLine: line,
+    beforeRestore: outLine,
+    segments,
+    afterRestore: restored
+  });
+}
 
 return restored;
 }
@@ -1388,7 +1619,7 @@ const shouldSkipSourceLanguage =
 
   const tasks = targetLangs.map(async code => {
     try {
-      const result = await translateLineSegments(mergedText, code, gid, segments);
+      const result = await translateLineSegments(mergedText, code, gid, segments, sourceLang);
       langOutputs[code] = result;
     } catch (e) {
       console.error(`❌ ${code} 翻譯失敗:`, e.message);
@@ -1396,17 +1627,22 @@ const shouldSkipSourceLanguage =
     }
   });
 
-  await Promise.race([
-    Promise.allSettled(tasks),
-    new Promise((_, reject) =>
-      setTimeout(() => {
-        translationTimedOut = true;
-        reject(new Error("Translation timeout"));
-      }, 28000)
-    )
-  ]).catch(e => {
-    console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
+  // 原本的 setTimeout 沒有清掉，每則訊息都會多留一個 28 秒的 timer
+  let timeoutHandle;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      translationTimedOut = true;
+      reject(new Error("Translation timeout"));
+    }, TRANSLATION_TOTAL_TIMEOUT_MS);
   });
+
+  try {
+    await Promise.race([Promise.allSettled(tasks), timeoutPromise]);
+  } catch (e) {
+    console.error("⚠️ 翻譯處理超時或部分失敗:", e.message);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
 
   let replyText = "";
 
@@ -1426,8 +1662,15 @@ const shouldSkipSourceLanguage =
   }
 
   const userName = await getGroupMemberDisplayName(gid, uid);
-  await safeReply(replyToken, `【${userName}】說：\n${replyText.trim()}`);
-  await incrementMonthlyUsage(ownerUserId, 1, masked.length);
+  const fullText = `【${userName}】說：\n${replyText.trim()}`;
+
+  // 這裡原本用 safeReply（明確不 push）。但翻譯是背景進行的，
+  // 主模型 25 秒 + fallback 25 秒之後 replyToken 很可能已失效，
+  // 一旦 reply 失敗整則翻譯就無聲消失，額度卻照扣。改用 reply 失敗自動轉 push。
+  await sendLongText(replyToken, gid, fullText);
+
+  // 成本與目標語言數成正比，額度不應該固定只扣 1
+  await incrementMonthlyUsage(ownerUserId, targetLangs.length, masked.length);
 }
 
 async function fetchImageUrlsByDate(gid, dateStr) {
@@ -1652,8 +1895,32 @@ const adminLimiter = rateLimit({
 const adminAuth = basicAuth({
   users: { [process.env.ADMIN_USER]: process.env.ADMIN_PASS },
   challenge: false,
+  safe: true, // timing-safe 比較，避免帳密被時間差推敲
   unauthorizedResponse: () => ({ success: false, error: "未登入或帳號密碼錯誤" })
 });
+
+/*
+  注意：public/ 是完全公開的靜態目錄。
+  /admin 這組 API 有 basic auth 保護，但後台「頁面本身」（HTML/JS）沒有，
+  任何人都能直接開啟並看到後台介面結構。
+
+  設定 PROTECT_ADMIN_STATIC=1 可以把檔名含 admin 的靜態檔一併納入驗證。
+  這裡使用 challenge: true，瀏覽器才會跳出輸入帳密的視窗。
+  預設關閉，以免影響現有前端的載入方式。
+*/
+if (process.env.PROTECT_ADMIN_STATIC === "1") {
+  const staticAdminAuth = basicAuth({
+    users: { [process.env.ADMIN_USER]: process.env.ADMIN_PASS },
+    challenge: true,
+    safe: true
+  });
+
+  app.use((req, res, next) => {
+    if (/admin/i.test(req.path)) return staticAdminAuth(req, res, next);
+    return next();
+  });
+}
+
 app.use(express.static(path.join(__dirname, "public")));
 
 const adminRouter = express.Router();
@@ -1854,31 +2121,15 @@ adminRouter.get("/groups", async (req, res) => {
     const groups = await Promise.all(
       allGids.map(async gid => {
         const inviter = groupInviter.get(gid) || null;
-        let groupName = null;
         let inviterName = null;
-        let memberCount = null;
 
-        try {
-          const summary = await client.getGroupSummary(gid);
-          groupName = summary?.groupName || null;
-        } catch (e) {
-          console.warn("取得群組名稱失敗:", gid, e.message);
-        }
-
-        try {
-          const countRes = await client.getGroupMembersCount(gid);
-          memberCount = countRes?.count ?? null;
-        } catch (e) {
-          console.warn("取得群組人數失敗:", gid, e.message);
-        }
+        // 原本每個群組固定打 3 次 LINE API，群組一多就會非常慢且容易撞 rate limit
+        const summary = await getGroupSummaryCached(gid);
+        const groupName = summary?.groupName ?? null;
+        const memberCount = summary?.memberCount ?? null;
 
         if (inviter) {
-          try {
-            const profile = await client.getGroupMemberProfile(gid, inviter);
-            inviterName = profile?.displayName || inviter;
-          } catch (e) {
-            console.warn("取得邀請人名稱失敗:", gid, inviter, e.message);
-          }
+          inviterName = await getGroupMemberDisplayName(gid, inviter);
         }
 
         const rawSub = inviter ? subscriptionByUser.get(inviter) : null;
@@ -1945,31 +2196,14 @@ adminRouter.get("/groups/:gid", async (req, res) => {
     const { gid } = req.params;
     const inviter = groupInviter.get(gid) || null;
 
-    let groupName = null;
     let inviterName = null;
-    let memberCount = null;
 
-    try {
-      const summary = await client.getGroupSummary(gid);
-      groupName = summary?.groupName || null;
-    } catch (e) {
-      console.warn(`取得群組名稱失敗 ${gid}:`, e.message);
-    }
-
-    try {
-      const countRes = await client.getGroupMembersCount(gid);
-      memberCount = countRes?.count ?? null;
-    } catch (e) {
-      console.warn(`取得群組人數失敗 ${gid}:`, e.message);
-    }
+    const summary = await getGroupSummaryCached(gid);
+    const groupName = summary?.groupName ?? null;
+    const memberCount = summary?.memberCount ?? null;
 
     if (inviter) {
-      try {
-        const profile = await client.getGroupMemberProfile(gid, inviter);
-        inviterName = profile?.displayName || inviter;
-      } catch (e) {
-        console.warn(`取得授權者名稱失敗 ${gid}/${inviter}:`, e.message);
-      }
+      inviterName = await getGroupMemberDisplayName(gid, inviter);
     }
 
     res.json({
@@ -2110,7 +2344,7 @@ adminRouter.post("/industries", async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    await loadIndustryMaster();
+    await loadIndustryMaster({ force: true });
     await addAdminLog("CREATE_INDUSTRY", `新增行業 ${name}`, req.auth.user, { id: ref.id, name });
     res.json({ success: true, item: { id: ref.id, name, sortOrder, enabled } });
   } catch (e) {
@@ -2144,7 +2378,7 @@ adminRouter.put("/industries/:id", async (req, res) => {
       { merge: true }
     );
 
-    await loadIndustryMaster();
+    await loadIndustryMaster({ force: true });
     await addAdminLog("UPDATE_INDUSTRY", `更新行業 ${id} → ${name}`, req.auth.user, { id, name, sortOrder, enabled, promptContext });
 
     res.json({ success: true, id, name, sortOrder, enabled, promptContext });
@@ -2159,7 +2393,7 @@ adminRouter.delete("/industries/:id", async (req, res) => {
     const doc = await db.collection("systemIndustries").doc(id).get();
     const name = doc.exists ? doc.data().name : null;
     await db.collection("systemIndustries").doc(id).delete();
-    await loadIndustryMaster();
+    await loadIndustryMaster({ force: true });
     await addAdminLog("DELETE_INDUSTRY", `刪除行業 ${name || id}`, req.auth.user, { id, name });
     res.json({ success: true, id });
   } catch (e) {
@@ -2284,6 +2518,7 @@ adminRouter.delete("/subscriptions/:userId", async (req, res) => {
     if (!userId) return res.status(400).json({ success: false, error: "缺少 userId" });
 
     await db.collection("userSubscriptions").doc(userId).delete();
+    invalidateSubscriptionCache(userId);
 
     await addAdminLog(
       "DELETE_SUBSCRIPTION",
@@ -2341,6 +2576,7 @@ adminRouter.put("/subscriptions/:userId/config", async (req, res) => {
     if (!snap.exists) payload.createdAt = admin.firestore.FieldValue.serverTimestamp();
 
     await ref.set(payload, { merge: true });
+    invalidateSubscriptionCache(userId);
 
     await addAdminLog("subscription_config", `設定授權 ${userId}`, "admin", payload);
 
@@ -2448,6 +2684,8 @@ adminRouter.put("/subscriptions/:userId/manual", async (req, res) => {
       return res.status(400).json({ success: false, error: `不支援的 action: ${action}` });
     }
 
+    invalidateSubscriptionCache(userId);
+
     await addAdminLog("MANUAL_SUBSCRIPTION", `手動操作 ${userId} → ${action}`, req.auth.user, { userId, action, plan, days, maxGroups, monthlyQuota, reason });
 
     const updated = await getSubscriptionByUserId(userId);
@@ -2466,13 +2704,16 @@ app.post(
   async (req, res) => {
     res.sendStatus(200);
     const events = req.body.events || [];
-    for (const event of events) {
-      try {
-        await handleEvent(event);
-      } catch (e) {
-        console.error("handleEvent error:", e);
-      }
-    }
+
+    // 原本是序列 for await：一批多個事件時，後面事件的 replyToken
+    // 會被前面的處理時間拖到過期。改成併發處理。
+    await Promise.allSettled(
+      events.map(event =>
+        handleEvent(event).catch(e => {
+          console.error("handleEvent error:", e);
+        })
+      )
+    );
   }
 );
 
@@ -2503,7 +2744,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-      
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
         return null;
       }
 
@@ -2544,7 +2785,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-       
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
         return null;
       }
 
@@ -2561,7 +2802,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
         return null;
       }
 
@@ -2598,7 +2839,7 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        
+        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
         return null;
       }
 
@@ -2631,7 +2872,7 @@ async function handleEvent(event) {
 
     const langSet = groupLang.get(gid);
     if (!langSet || langSet.size === 0) return null;
-if (event.message?.mention) {
+if (DEBUG_TRANSLATION && event.message?.mention) {
   console.log("RAW official mention:", JSON.stringify(event.message.mention));
 }
 
@@ -2673,10 +2914,27 @@ if (
   return null;
 }
 // === PING 伺服器 ===
-setInterval(() => {
-  https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
-    .on("error", e => console.error("PING 失敗:", e.message));
-}, 10 * 60 * 1000);
+// PING_URL 未設定時原本每 10 分鐘就會丟一次例外，這裡直接跳過
+if (process.env.PING_URL) {
+  setInterval(() => {
+    try {
+      https.get(process.env.PING_URL, r => console.log("📡 PING", r.statusCode))
+        .on("error", e => console.error("PING 失敗:", e.message));
+    } catch (e) {
+      console.error("PING 失敗:", e.message);
+    }
+  }, 10 * 60 * 1000).unref();
+} else {
+  console.warn("⚠️ 未設定 PING_URL，略過保活 ping");
+}
+
+process.on("unhandledRejection", reason => {
+  console.error("❌ unhandledRejection:", reason);
+});
+
+process.on("uncaughtException", err => {
+  console.error("❌ uncaughtException:", err);
+});
 // ✅ Step 4: 啟動時載入封鎖群組清單
 Promise.all([
   loadLang(),
@@ -2686,9 +2944,22 @@ Promise.all([
   loadDeletedGroups()
 ]).then(() => {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
   });
+
+  const shutdown = signal => {
+    console.log(`🛑 收到 ${signal}，準備關閉...`);
+    server.close(() => {
+      console.log("✅ HTTP server 已關閉");
+      process.exit(0);
+    });
+    // 逾時仍未關閉就強制結束，避免卡住部署流程
+    setTimeout(() => process.exit(1), 10000).unref();
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }).catch(e => {
   console.error("❌ 初始化失敗:", e);
   process.exit(1);
