@@ -236,24 +236,35 @@ function isOutputValidForLang(out = "", targetLang = "") {
     return chineseLen > 0;
   }
 
+  /*
+    vi / id 的語言特徵判斷需要足夠的文字量才可靠。
+    短譯文常常一個特徵都沒有卻完全正確 —— 例如「下班」的越南文是「tan ca」，
+    本身就不帶任何聲調符號。對這種短輸出套嚴格規則會把正確翻譯判成失敗，
+    白跑一次 fallback 之後吐出錯誤訊息，比放行更糟。
+  */
+  const hasEnoughTextToJudge = meaningful.length >= 12;
+
   // 拉丁字母系語言（en / vi / id）共用同一套字元，
   // 只檢查「有沒有拉丁字母」等於沒有檢查 —— 越南文輸出成英文一樣會過關。
-  // 因此對 vi / id 額外要求該語言的特徵，避免錯語言直接貼進群組。
+  // 因此對 vi / id 在文字量足夠時額外要求該語言的特徵。
   if (targetLang === "vi") {
     if (latinLen === 0 || isChineseDominant) return false;
+    if (!hasEnoughTextToJudge) return true;
+
     const viDiacritics = (meaningful.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
     const viWords = (
-      text.match(/\b(và|của|là|không|được|các|cho|này|với|người|đã|sẽ|khi|nếu|thì|tại|trong|ngày|giờ|làm|việc|máy)\b/gi) || []
+      text.match(/\b(và|của|là|không|được|các|cho|này|với|người|đã|sẽ|khi|nếu|thì|tại|trong|ngày|giờ|làm|việc|máy|ca|tan|nghi|xin|anh|chi|em)\b/gi) || []
     ).length;
-    // 純代號／型號等短輸出（無小寫字母）不做語言特徵要求
     const looksLikeCode = /^[A-Z0-9\s\-_/.]+$/.test(text);
     return looksLikeCode || viDiacritics >= 1 || viWords >= 1;
   }
 
   if (targetLang === "id") {
     if (latinLen === 0 || isChineseDominant) return false;
+    if (!hasEnoughTextToJudge) return true;
+
     const idWords = (
-      text.match(/\b(dan|yang|untuk|dengan|tidak|ini|itu|adalah|akan|dari|ke|di|pada|sudah|harus|bisa|jam|hari|kerja|mesin|tolong|silakan)\b/gi) || []
+      text.match(/\b(dan|yang|untuk|dengan|tidak|ini|itu|adalah|akan|dari|ke|di|pada|sudah|harus|bisa|jam|hari|kerja|mesin|tolong|silakan|pulang|masuk|lembur|libur)\b/gi) || []
     ).length;
     const looksLikeCode = /^[A-Z0-9\s\-_/.]+$/.test(text);
     return looksLikeCode || idWords >= 1;
@@ -1269,6 +1280,49 @@ const LANG_ENGLISH_NAMES = {
   "zh-TW": "Traditional Chinese"
 };
 
+/*
+  判斷原文是否為「短的專有名詞／代號」。
+
+  prompt 第 6 條本來就允許公司名、廠區名、產品名原樣保留，
+  但輸出語系檢查看到「目標是越南文卻沒有拉丁字母」就會判定失敗，
+  等於自己打自己。像「景碩」這種兩個字的公司名會白跑一次 fallback，
+  最後吐出「（翻譯異常，請稍後再試）」。
+
+  這裡只認定「短、且沒有句子結構」的內容，
+  一般短句（下班、休假、加班）仍然會照常要求翻譯。
+*/
+function looksLikeShortProperNoun(text = "") {
+  const raw = String(text).trim();
+  if (!raw) return false;
+
+  // 有標點、換行或多個詞 → 是句子，不是名稱
+  if (/[\n。，、！？；：,.!?;]/.test(raw)) return false;
+  if (raw.split(/\s+/).filter(Boolean).length > 2) return false;
+
+  const letters = raw.replace(/[^\p{L}]/gu, "");
+  if (!letters) return false;
+
+  const chineseLen = (letters.match(/[\u4e00-\u9fff]/g) || []).length;
+
+  if (chineseLen === letters.length) {
+    // 中文名稱：4 字以內（景碩、台積電、鴻海精密）
+    if (chineseLen > 4) return false;
+
+    // 但「下班」「休假」「加班」也是短中文，這些必須照常翻譯。
+    // 含常用動作／狀態字的一律不走這條快速通道。
+    // 誤擋的公司名（例如「上銀」）仍會由下方「兩個模型都原樣輸出」那層接住，
+    // 只是多花一次 API 呼叫，比放行未翻譯的句子安全。
+    if (/[請要有沒去來上下開關停修換做走到在班假休加工好壞多少幾點早晚今明昨天嗎吧了會能可不是我你他們送收發領交籤退進出]/.test(raw)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  // 拉丁字母代號：短且是型號樣式
+  return /^[A-Za-z0-9\-_/.]{1,12}$/.test(raw);
+}
+
 function buildTranslationCacheKey(text, targetLang, industry, systemPrompt) {
   // 原本的 key 帶了 gid 和整段 systemPrompt：
   //  - gid 讓「同行業別、不同群組」無法共用快取，命中率大幅下降
@@ -1361,6 +1415,15 @@ async function translateWithChatGPT(
       return out;
     }
 
+    // 短的專有名詞／代號被原樣輸出，是 prompt 明確允許的行為，
+    // 不該送進輸出語系檢查（否則「景碩」翻越南文永遠會失敗）
+    if (unchanged && looksLikeShortProperNoun(text)) {
+      console.log("ℹ️ 專有名詞原樣保留：", { targetLang, text });
+      translationCache.set(cacheKey, out);
+      if (primaryCacheKey !== cacheKey) translationCache.set(primaryCacheKey, out);
+      return out;
+    }
+
     // 檢查輸出是否符合目標語言的字元特徵
     const isValid = isOutputValidForLang(out, targetLang);
 
@@ -1425,7 +1488,17 @@ Output requirements:
         );
       }
 
-      // 重試仍失敗，不要把錯語系內容貼出去。
+      // 重試仍失敗。
+      // 但若 fallback 模型也選擇原樣輸出，代表兩個獨立模型都認為這段內容不需要翻譯
+      // （廠名、人名、代號…），這是可信的訊號，直接原樣放行比吐錯誤訊息好。
+      if (unchanged) {
+        console.log("ℹ️ 兩個模型皆原樣輸出，視為不可翻譯內容：", { targetLang, text });
+        translationCache.set(cacheKey, out);
+        if (primaryCacheKey !== cacheKey) translationCache.set(primaryCacheKey, out);
+        return out;
+      }
+
+      // 輸出既不是目標語言、也不是原文 → 真的異常，不要貼出去。
       // 這種佔位字串不進快取，否則整整 24 小時都會回同一句錯誤訊息。
       return targetLang === "zh-TW"
         ? "（繁中翻譯異常，請稍後再試）"
@@ -1656,6 +1729,21 @@ const shouldSkipSourceLanguage =
   }
 
   if (!replyText.trim()) return;
+
+  /*
+    所有語言的結果都跟原文完全相同 → 整則訊息只有廠名／人名／代號，
+    回覆「🇻🇳：景碩」對群組沒有任何資訊量，只是洗版。直接不回。
+    （translateLineSegments 會還原 mention，所以要拿還原後的原文來比對）
+  */
+  const restoredSource = restoreMentions(mergedText, segments).trim();
+  const allIdenticalToSource =
+    targetLangs.length > 0 &&
+    targetLangs.every(code => (langOutputs[code] || "").trim() === restoredSource);
+
+  if (allIdenticalToSource) {
+    console.log("ℹ️ 各語言輸出皆與原文相同，略過回覆：", restoredSource);
+    return;
+  }
 
   if (translationTimedOut) {
     replyText = `⚠️ 部分翻譯逾時，以下內容可能不完整。\n\n${replyText}`;
