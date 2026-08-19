@@ -1242,10 +1242,14 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 - 本次目標語言是「${langLabel}」。
 - 必須將原文中可翻譯的內容完整翻譯為「${langLabel}」。
 - 不得直接照抄原文，不得輸出以中文為主的內容。
+- 公司名稱、客戶名稱、廠區名稱、地名、站所名稱、產品名稱或內部識別名稱，
+  若沒有可靠的常用譯名，可以保留原樣。
 - 但是故障情況、維修動作、設備零件、材料、數量描述、工作指示與一般名詞，
   一律必須翻譯成「${langLabel}」。
 - 除機台代號、型號、批號、料號、工單號、ERP 代碼、數字、日期、時間、
   URL、Email、@提及 placeholder 外，不得保留整句中文原文。
+- 輸出中不得殘留任何中文計量單位（米、條、支、個、台、片、組、箱、張、層、號…）。
+  數量描述必須整組翻譯，例如「2米X 1條」不可原樣保留。
 - 只輸出翻譯結果，不要解釋、不要加標題、不要說明翻譯規則。
 `.trim();
 
@@ -1262,7 +1266,15 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
    - 英文縮寫、全大寫英文詞、英數混合代碼、單一英文字母代號（A、B、C）
    - 數字、日期、時間、URL、Email、@提及 placeholder
    例外：該英文詞在句中明顯是一般單字時（如 email me、check、OK），照一般文字翻譯。
+   注意：「保留數字」指的是保留阿拉伯數字本身，不包含中文計量單位。
+   數量與尺寸的中文單位（米、公尺、公分、條、支、片、個、台、組、箱、包、
+   張、塊、根、把、件、層、樓、號、度、公斤、小時…）一律必須翻譯成目標語言。
+   例如「2米X 1條」要翻成目標語言的「2 公尺 X 1 條」對應說法，不可原樣輸出「2米X 1條」。
+   已經是英數格式的尺寸（如 98cmx291cm）則保留原樣。
 5. 保留原文的換行格式。只輸出翻譯結果，不要加上說明、前後綴或語言名稱。
+6. 公司名稱、客戶名稱、地點名稱、廠區名稱、站所名稱、產品名稱或其他專有識別名稱，
+若沒有可靠、常用的目標語言名稱，可以原樣保留；其餘描述、動作、故障情況、維修項目與指示，必須翻譯為目標語言。
+
 ${industryContext}
 ${targetLanguageRule}
 `.trim();
@@ -1316,6 +1328,26 @@ function looksLikeShortProperNoun(text = "") {
 
   // 拉丁字母代號：短且是型號樣式
   return /^[A-Za-z0-9\-_/.]{1,12}$/.test(raw);
+}
+
+/*
+  偵測「數字後面接中文計量單位」的殘留，例如 2米、1條、3片。
+
+  這是刻意設計成很窄的檢查：
+  - isOutputValidForLang 是用來抓「整句沒翻譯」的，看的是中文比例，
+    像「2米X 1條」這種只佔 2 個字的殘留完全抓不到（也不該用比例去抓）。
+  - 但如果放寬成「輸出含任何中文就算失敗」，公司名、廠區名原樣保留
+    （prompt 本來就允許）就會被誤殺。
+
+  因此只認「阿拉伯數字 + 中文單位字」這個組合。公司名或人名不會長這樣，
+  誤判率極低，卻能精準抓到這類漏翻。
+*/
+const CHINESE_UNIT_CHARS = "米條支片個台組箱包張塊根把件層樓號度捲卷袋桶瓶罐顆粒隻只束捆盒杯碗份位名排套副對雙打車面尺寸吋碼升斤克噸坪";
+const LEFTOVER_UNIT_RE = new RegExp(`\\d\\s*[${CHINESE_UNIT_CHARS}]`);
+
+function hasLeftoverChineseUnit(out = "", targetLang = "") {
+  if (targetLang === "zh-TW") return false;
+  return LEFTOVER_UNIT_RE.test(String(out));
 }
 
 function buildTranslationCacheKey(text, targetLang, industry, systemPrompt) {
@@ -1498,6 +1530,56 @@ Output requirements:
       return targetLang === "zh-TW"
         ? "（繁中翻譯異常，請稍後再試）"
         : "（翻譯異常，請稍後再試）";
+    }
+
+    /*
+      輸出語言正確，但殘留了「2米X 1條」這種中文計量單位。
+      這是「大致正確、局部漏翻」，跟整句沒翻不同，所以處理方式也不同：
+      重試一次，而且只有在重試結果確實變好時才採用。
+      重試失敗就沿用原本的翻譯 —— 局部漏翻仍然遠比一句錯誤訊息有用。
+    */
+    if (retry < 1 && hasLeftoverChineseUnit(out, targetLang)) {
+      const targetLanguageName = LANG_ENGLISH_NAMES[targetLang] || targetLang;
+
+      const unitFixPrompt = `
+${buildTranslationPrompt(targetLang, industry, true)}
+
+UNIT CORRECTION — MANDATORY:
+The previous response left Chinese measure words untranslated
+(for example 米 / 條 / 支 / 個 / 台 / 片 / 張 / 層).
+
+Rewrite the translation into ${targetLanguageName} so that:
+- Every quantity and dimension uses ${targetLanguageName} unit words.
+  "2米X 1條" must become the ${targetLanguageName} equivalent of "2 meters X 1 strip".
+- Arabic numerals stay as digits.
+- Sizes already written in Latin form (e.g. 98cmx291cm) stay unchanged.
+- No Chinese unit character may remain anywhere in the output.
+- Output ONLY the translation. Do not explain.
+`.trim();
+
+      console.warn("⚠️ 輸出殘留中文計量單位，嘗試修正：", { targetLang, out });
+
+      const retried = await translateWithChatGPT(
+        text,
+        targetLang,
+        gid,
+        retry + 1,
+        unitFixPrompt,
+        "gpt-4.1-mini",
+        { sourceLang }
+      );
+
+      const improved =
+        typeof retried === "string" &&
+        retried.trim() &&
+        isOutputValidForLang(retried, targetLang) &&
+        !hasLeftoverChineseUnit(retried, targetLang);
+
+      if (improved) {
+        out = retried;
+      } else {
+        console.warn("↩️ 單位修正未改善，沿用原譯文");
+      }
     }
 
     translationCache.set(cacheKey, out);
