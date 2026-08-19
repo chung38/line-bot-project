@@ -1242,8 +1242,6 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 - 本次目標語言是「${langLabel}」。
 - 必須將原文中可翻譯的內容完整翻譯為「${langLabel}」。
 - 不得直接照抄原文，不得輸出以中文為主的內容。
-- 公司名稱、客戶名稱、廠區名稱、地名、站所名稱、產品名稱或內部識別名稱，
-  若沒有可靠的常用譯名，可以保留原樣。
 - 但是故障情況、維修動作、設備零件、材料、數量描述、工作指示與一般名詞，
   一律必須翻譯成「${langLabel}」。
 - 除機台代號、型號、批號、料號、工單號、ERP 代碼、數字、日期、時間、
@@ -1265,9 +1263,6 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
    - 數字、日期、時間、URL、Email、@提及 placeholder
    例外：該英文詞在句中明顯是一般單字時（如 email me、check、OK），照一般文字翻譯。
 5. 保留原文的換行格式。只輸出翻譯結果，不要加上說明、前後綴或語言名稱。
-6. 公司名稱、客戶名稱、地點名稱、廠區名稱、站所名稱、產品名稱或其他專有識別名稱，
-若沒有可靠、常用的目標語言名稱，可以原樣保留；其餘描述、動作、故障情況、維修項目與指示，必須翻譯為目標語言。
-
 ${industryContext}
 ${targetLanguageRule}
 `.trim();
