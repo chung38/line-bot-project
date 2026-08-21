@@ -237,43 +237,64 @@ function isOutputValidForLang(out = "", targetLang = "") {
   }
 
   /*
-    vi / id 的語言特徵判斷需要足夠的文字量才可靠。
-    短譯文常常一個特徵都沒有卻完全正確 —— 例如「下班」的越南文是「tan ca」，
-    本身就不帶任何聲調符號。對這種短輸出套嚴格規則會把正確翻譯判成失敗，
-    白跑一次 fallback 之後吐出錯誤訊息，比放行更糟。
-  */
-  const hasEnoughTextToJudge = meaningful.length >= 12;
+    拉丁字母系語言（en / vi / id）共用同一套字元，無法用字元範圍區分。
 
-  // 拉丁字母系語言（en / vi / id）共用同一套字元，
-  // 只檢查「有沒有拉丁字母」等於沒有檢查 —— 越南文輸出成英文一樣會過關。
-  // 因此對 vi / id 在文字量足夠時額外要求該語言的特徵。
+    這裡刻意採用「反證」而非「舉證」：
+      ✗ 舊做法：要求輸出含有該語言的特徵詞，否則判定失敗。
+        → 「tan ca」「Kode karyawan kita ya」這種完全正確的短句
+          常常一個特徵詞都不含，結果正確翻譯被殺掉、變成錯誤訊息。
+      ✓ 新做法：只有在偵測到「它是別的語言」的正面證據時才判定失敗。
+
+    兩種誤判的代價不對等：
+      漏抓一句錯語言 → 使用者看到一句看得懂但語言不對的訊息。
+      誤殺一句正確翻譯 → 使用者看到「（翻譯異常）」，資訊完全喪失。
+    所以一律偏向放行。
+  */
+
+  // 越南文專屬字元。印尼文與英文都不會出現，是很強的反證。
+  const viDiacritics = (meaningful.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+
+  // 英文功能詞。避開會與越南文無聲調拼法相撞的詞（on = ơn、the = thế），
+  // 因此要求至少兩個才算數。
+  const englishHits = (
+    text.match(/\b(the|is|are|was|were|please|this|that|these|those|will|would|should|have|has|been|with|and|for|your|our|they|their|not|there|here|because|when|which|from|about|after|before|need|make|check|already|too|very|but|also)\b/gi) || []
+  ).length;
+
+  /*
+    印尼文可以用更寬的英文詞表：in / of / to / at / on / it / as / by / be / an / we
+    這些在印尼文裡都不是詞（印尼文用 di、ke、dari、dan、ini、itu、kami），
+    也不會跟越南文無聲調拼法混淆，因此不會誤傷正確的印尼文譯文。
+    這條是為了擋掉「目標印尼文卻回英文」且句中沒有 the / and / please 的情況。
+  */
+  const englishHitsForId = englishHits + (
+    text.match(/\b(in|of|to|at|on|it|as|by|be|an|we|without|into|over|under|between|during|each|some|any|all|more|than|then|only|such|its|his|her|him|she|he)\b/gi) || []
+  ).length;
+
+  // 印尼文專屬功能詞（越南文不會出現這些）
+  const idHits = (
+    text.match(/\b(dan|yang|untuk|dengan|tidak|adalah|sudah|akan|bisa|dari|pada|harus|atau|juga|lagi|saja|karena|kalau)\b/gi) || []
+  ).length;
+
   if (targetLang === "vi") {
     if (latinLen === 0 || isChineseDominant) return false;
-    if (!hasEnoughTextToJudge) return true;
-
-    const viDiacritics = (meaningful.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
-    const viWords = (
-      text.match(/\b(và|của|là|không|được|các|cho|này|với|người|đã|sẽ|khi|nếu|thì|tại|trong|ngày|giờ|làm|việc|máy|ca|tan|nghi|xin|anh|chi|em)\b/gi) || []
-    ).length;
-    const looksLikeCode = /^[A-Z0-9\s\-_/.]+$/.test(text);
-    return looksLikeCode || viDiacritics >= 1 || viWords >= 1;
+    if (thaiLen > 0) return false;                       // 殘留泰文原文
+    if (viDiacritics >= 1) return true;                  // 確定是越南文
+    if (englishHits >= 2) return false;                  // 明顯是英文
+    if (idHits >= 2) return false;                       // 明顯是印尼文
+    return true;                                         // 沒有反證 → 放行
   }
 
   if (targetLang === "id") {
     if (latinLen === 0 || isChineseDominant) return false;
-    if (!hasEnoughTextToJudge) return true;
-
-    const idWords = (
-      text.match(/\b(dan|yang|untuk|dengan|tidak|ini|itu|adalah|akan|dari|ke|di|pada|sudah|harus|bisa|jam|hari|kerja|mesin|tolong|silakan|pulang|masuk|lembur|libur)\b/gi) || []
-    ).length;
-    const looksLikeCode = /^[A-Z0-9\s\-_/.]+$/.test(text);
-    return looksLikeCode || idWords >= 1;
+    if (thaiLen > 0) return false;
+    if (viDiacritics >= 1) return false;                 // 印尼文不會有越南文聲調字元
+    if (idHits >= 1) return true;                        // 確定是印尼文
+    if (englishHitsForId >= 2) return false;             // 明顯是英文
+    return true;
   }
 
   if (targetLang === "en") {
     if (latinLen === 0 || isChineseDominant) return false;
-    // 英文不應該帶大量越南文聲調字元或泰文
-    const viDiacritics = (meaningful.match(/[\u1EA0-\u1EF9]/g) || []).length;
     if (thaiLen > 0) return false;
     if (viDiacritics >= 2) return false;
     return true;
