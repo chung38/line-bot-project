@@ -1241,12 +1241,29 @@ async function saveIndustryForGroup(gid) {
 
 // ✅ Step 3 (deleteGroupSettings): 退群時寫入 deletedGroups
 async function deleteGroupSettings(gid) {
+  /*
+    群組名稱必須在「bot 還在群組裡」的此刻就記下來。
+    一旦退群，就無法再向 LINE API 查詢群組資訊，
+    事後補查一定失敗，後台封鎖清單就只剩一串看不懂的 gid。
+  */
+  let groupName = null;
+  try {
+    const summary = await getGroupSummaryCached(gid);
+    groupName = summary?.groupName || null;
+  } catch {
+    // 已退群或 API 失敗都不該影響封鎖流程，名稱留空即可
+  }
+
+  const inviterUserId = groupInviter.get(gid) || null;
+
   await Promise.allSettled([
     db.collection("groupLanguages").doc(gid).delete(),
     db.collection("groupInviters").doc(gid).delete(),
     db.collection("groupIndustries").doc(gid).delete(),
     // 寫入封鎖清單，防止重新自動建立
     db.collection("deletedGroups").doc(gid).set({
+      groupName,
+      inviterUserId,
       deletedAt: admin.firestore.FieldValue.serverTimestamp()
     })
   ]);
@@ -2492,10 +2509,39 @@ adminRouter.get("/groups-blocked", async (req, res) => {
     const snapshot = await db.collection("deletedGroups")
       .orderBy("deletedAt", "desc")
       .get();
-    const items = snapshot.docs.map(doc => ({
-      gid: doc.id,
-      ...doc.data()
-    }));
+
+    const items = await Promise.all(
+      snapshot.docs.map(async doc => {
+        const data = doc.data();
+        let groupName = data.groupName || null;
+
+        /*
+          舊的封鎖紀錄沒有存 groupName。
+          bot 通常已經不在群組裡，查詢多半會失敗，但成本很低（有快取），
+          萬一是「還在群組但被後台封鎖」的情況就能補到名稱。
+          查不到就給 null，前端自行顯示 gid。
+        */
+        if (!groupName) {
+          const summary = await getGroupSummaryCached(doc.id);
+          groupName = summary?.groupName || null;
+        }
+
+        let inviterName = null;
+        if (data.inviterUserId) {
+          inviterName = await getGroupMemberDisplayName(doc.id, data.inviterUserId);
+        }
+
+        return {
+          gid: doc.id,
+          ...data,
+          groupName,
+          inviterName,
+          // 前端可直接顯示這欄，不必自己判斷有沒有名稱
+          displayName: groupName || `(未命名群組) ${doc.id.slice(0, 10)}…`
+        };
+      })
+    );
+
     res.json({ success: true, items });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -2505,9 +2551,24 @@ adminRouter.get("/groups-blocked", async (req, res) => {
 adminRouter.delete("/groups/:gid/blocked", async (req, res) => {
   try {
     const { gid } = req.params;
+
+    // 先讀出名稱再刪，否則刪掉就查不到了，log 會只剩 gid
+    let groupName = null;
+    try {
+      const doc = await db.collection("deletedGroups").doc(gid).get();
+      groupName = doc.exists ? (doc.data().groupName || null) : null;
+    } catch {
+      // 讀不到不影響解除封鎖
+    }
+
     await db.collection("deletedGroups").doc(gid).delete();
     deletedGroups.delete(gid);
-    await addAdminLog("UNBLOCK_GROUP", `解除封鎖群組 ${gid}`, req.auth.user, { gid });
+    await addAdminLog(
+      "UNBLOCK_GROUP",
+      `解除封鎖群組 ${groupName ? `${groupName} (${gid})` : gid}`,
+      req.auth.user,
+      { gid, groupName }
+    );
     res.json({ success: true, gid });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
