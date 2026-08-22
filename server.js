@@ -346,18 +346,43 @@ function detectLang(text) {
     return "vi";
   }
 
+  /*
+    印尼文判斷。
+
+    舊版只認日常口語詞（izin、sakit、cuti、gimana），工廠對話幾乎都撈不到，
+    於是「Terlalu banyak sampah sehingga aliran air tersumbat」整句被判成英文，
+    導致「跳過原文語言」失效 —— 印尼文訊息又被翻成印尼文回貼一次。
+
+    這裡補三種證據，並且跟英文證據比大小才下判斷：
+      1. 功能詞與工廠常用詞
+      2. 構詞前綴 ter- / ber- / meng- / mem- / pen-（英文極少這樣構詞）
+      3. 後綴 -nya / -kan / -lah / -pun
+  */
   const idKeywordHits = (
-    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|oke|okee|mungkin|gimana|begini|begitu)\b/gi) || []
+    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|sore|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|kami|anda|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|silakan|silahkan|oke|okee|mungkin|gimana|begini|begitu|karena|kalau|atau|saja|masih|sangat|semua|setiap|sehingga|supaya|agar|lebih|kurang|banyak|sedikit|jangan|bukan|hanya|mohon|orang|pak|bapak|ibu|air|mesin|alat|barang|gudang|bagian|ruang|pintu|pipa|listrik|sampah|kotor|bersih|rusak|panas|dingin|mati|hidup|nyala|penuh|kosong|cepat|lambat|ganti|periksa|cek|masuk|keluar|selesai|sekarang|kemarin|coba|pakai|bawa|ambil|buang|perbaiki|kunci|minyak|oli|ya|kode|karyawan|nomor|nama|hasil|waktu|tempat|sedang|sendiri|punya|dapat|buat|lihat|tahu|kirim|terus|langsung|kembali|dulu|nanti|tadi)\b/gi) || []
+  ).length;
+
+  // 印尼文構詞前綴。英文偶爾會撞到（terminal、mention、pending），
+  // 所以下面用「印尼文證據必須多於英文證據」來把這類情況排除。
+  const idMorphHits = (
+    cleaned.match(/\b(ter|ber|meng|meny|mem|men|peng|pem|pen)[a-z]{4,}\b/gi) || []
   ).length;
 
   const idSuffixHits = (
-    cleaned.match(/\b\w+(nya|kan|lah|pun)\b/gi) || []
+    cleaned.match(/\b[a-z]{3,}(nya|kan|lah|pun)\b/gi) || []
   ).length;
+
+  // 英文證據。印尼文不使用這些詞，因此不會誤傷正確的印尼文句子。
+  const enHits = (
+    cleaned.match(/\b(the|is|are|was|were|please|this|that|these|those|will|would|should|have|has|had|been|with|and|for|you|your|we|our|they|their|not|there|here|because|when|which|from|about|after|before|need|make|check|of|to|in|on|at|it|as|by|be|an|do|does|did|can|could|may|must|all|any|some|more|than|then|only|but|also|now|today|tomorrow|please|my|me|him|her|his|she|he)\b/gi) || []
+  ).length;
+
+  const idScore = idKeywordHits + idMorphHits + idSuffixHits;
 
   if (chineseLen >= 1 && foreignLen === 0) return "zh-TW";
   if (chineseRatio >= 0.45 && chineseLen >= 1) return "zh-TW";
 
-  if (idKeywordHits >= 2 || (idKeywordHits >= 1 && idSuffixHits >= 1)) {
+  if (idScore >= 2 && idScore > enHits) {
     return "id";
   }
 
@@ -1263,6 +1288,8 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 - 本次目標語言是「${langLabel}」。
 - 必須將原文中可翻譯的內容完整翻譯為「${langLabel}」。
 - 不得直接照抄原文，不得輸出以中文為主的內容。
+- 公司名稱、客戶名稱、廠區名稱、地名、站所名稱、產品名稱或內部識別名稱，
+  若沒有可靠的常用譯名，可以保留原樣。
 - 但是故障情況、維修動作、設備零件、材料、數量描述、工作指示與一般名詞，
   一律必須翻譯成「${langLabel}」。
 - 除機台代號、型號、批號、料號、工單號、ERP 代碼、數字、日期、時間、
@@ -1291,7 +1318,8 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
    例如「2米X 1條」要翻成目標語言的「2 公尺 X 1 條」對應說法，不可原樣輸出「2米X 1條」。
    已經是英數格式的尺寸（如 98cmx291cm）則保留原樣。
 5. 保留原文的換行格式。只輸出翻譯結果，不要加上說明、前後綴或語言名稱。
-6. 描述、動作、故障情況、維修項目與指示，必須翻譯為目標語言。
+6. 公司名稱、客戶名稱、地點名稱、廠區名稱、站所名稱、產品名稱或其他專有識別名稱，
+若沒有可靠、常用的目標語言名稱，可以原樣保留；其餘描述、動作、故障情況、維修項目與指示，必須翻譯為目標語言。
 
 ${industryContext}
 ${targetLanguageRule}
