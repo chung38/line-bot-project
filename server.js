@@ -155,7 +155,10 @@ const i18n = {
     wrongFormat: "格式錯誤，請輸入 !文宣 YYYY-MM-DD",
     noPermission: "❌ 你沒有權限操作此群組設定",
     invalidIndustry: "❌ 無效的行業別",
-    invalidUserId: "❌ userId 格式不正確"
+    invalidUserId: "❌ userId 格式不正確",
+    groupBlocked:
+      "⚠️ 此群組先前已停用翻譯服務，目前無法使用。\n" +
+      "若需重新啟用，請聯繫管理員解除後再試。"
   }
 };
 
@@ -957,7 +960,11 @@ async function ensureInviterIfMissing(gid, uid) {
 
   // 機器人曾退出或被踢出的群組，不重建設定
   if (deletedGroups.has(gid)) {
-    return { ok: false, code: "GROUP_DELETED", message: "此群組已停用翻譯服務。" };
+    return {
+      ok: false,
+      code: "GROUP_DELETED",
+      message: i18n["zh-TW"].groupBlocked
+    };
   }
 
   let inviter = groupInviter.get(gid);
@@ -3000,6 +3007,18 @@ async function handleEvent(event) {
   }
 
   if (event.type === "join" && gid) {
+    /*
+      封鎖檢查要在 sendMenu 之前。
+      否則選單照常送出、但使用者按下任何按鈕都會被
+      ensureInviterIfMissing 擋掉，看起來像機器人壞了，
+      而不是知道這個群組已被停用。
+    */
+    if (deletedGroups.has(gid)) {
+      console.log("🚫 已封鎖的群組嘗試重新加入：", gid);
+      await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].groupBlocked);
+      return null;
+    }
+
     await sendMenu(gid);
     return null;
   }
