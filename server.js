@@ -188,7 +188,20 @@ function isOnlyEmojiOrWhitespace(txt = "") {
   if (!stripped) return true;
 
   let s = stripped.replace(/[\s.,!?，。？！、:：;；"'"'（）【】《》\[\]()]/g, "");
-  s = s.replace(/\uFE0F/g, "").replace(/\u200D/g, "");
+  s = s.replace(/[\uFE00-\uFE0F\u200D]/g, "");
+
+  /*
+    LINE 專屬表情符號有兩種送法：
+      1. 新版：text 內是 $ 佔位符，另外帶 emojis 陣列 → 由 isSymbolOrNum 擋下
+      2. 舊版：直接使用 Unicode 私有使用區（PUA）的字元
+
+    PUA 字元不屬於 Extended_Pictographic，原本的判斷抓不到，
+    整串就被當成一般文字送去翻譯，模型只能回「（表情符號）」這種無意義結果。
+    這裡把 PUA 與膚色修飾符一併視為表情符號。
+  */
+  s = s.replace(/[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu, "");
+  s = s.replace(/[\u{1F3FB}-\u{1F3FF}\u{1F1E6}-\u{1F1FF}]/gu, "");
+
   if (!s) return true;
 
   return /^\p{Extended_Pictographic}+$/u.test(s);
@@ -488,9 +501,20 @@ function extractMentionsFromLineMessage(message) {
 }
 function restoreMentions(text, segments) {
   let restored = text;
+
+  /*
+    模型常常把相鄰佔位符之間的空格吃掉，
+    「__MENTION_0__ __MENTION_1__」變成「__MENTION_0____MENTION_1__」，
+    還原後三個名字會全部黏在一起（@803 아디 싹@สุริยะ...）。
+    先把緊貼的佔位符補回一個空格。
+  */
+  restored = restored.replace(/(__MENTION_\d+__)(?=__MENTION_\d+__)/g, "$1 ");
+
   segments.forEach(seg => {
-    restored = restored.replace(new RegExp(seg.key, "g"), seg.text);
+    // 佔位符是固定格式，用 split/join 比建 RegExp 快也更安全
+    restored = restored.split(seg.key).join(seg.text);
   });
+
   return restored;
 }
 
@@ -1320,6 +1344,9 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   URL、Email、@提及 placeholder 外，不得保留整句中文原文。
 - 輸出中不得殘留任何中文計量單位（米、條、支、個、台、片、組、箱、張、層、號…）。
   數量描述必須整組翻譯，例如「2米X 1條」不可原樣保留。
+- 只輸出原文的翻譯內容。嚴禁自行補上原文沒有的任何文字，
+  特別是網站名稱、網址、廣告詞、推薦語或結尾備註。
+  原文沒有的東西，輸出就不能有。
 - 只輸出翻譯結果，不要解釋、不要加標題、不要說明翻譯規則。
 `.trim();
 
@@ -1420,6 +1447,48 @@ function hasLeftoverChineseUnit(out = "", targetLang = "") {
   return LEFTOVER_UNIT_RE.test(String(out));
 }
 
+/*
+  移除模型憑空生成的中文字串。
+
+  症狀：翻成泰文的結果尾巴接上「久久综合网」這類中國 SEO 垃圾站名。
+  這是中文網頁語料污染造成的，模型在輸出結尾容易接上這種字串，
+  輸入結構特殊時（例如整句以 __MENTION_n__ 佔位符開頭）機率更高。
+
+  isOutputValidForLang 抓不到：目標是泰文時，泰文字元佔絕大多數，
+  五個中文字的比例極低，isChineseDominant 判定為 false 就放行了。
+
+  判斷規則刻意收得很窄：只清掉「連續 2 個以上、且原文完全沒出現過」的中文字。
+  - 原文有的中文（公司名、廠區名、人名）一律保留，prompt 本來就允許
+  - 目標語言是繁中時完全不檢查，因為新的中文字正是翻譯結果
+*/
+function stripHallucinatedChinese(out = "", sourceText = "", targetLang = "") {
+  if (targetLang === "zh-TW") return out;
+
+  const text = String(out);
+  if (!/[\u4e00-\u9fff]/.test(text)) return text;
+
+  const sourceChars = new Set(
+    String(sourceText).match(/[\u4e00-\u9fff]/g) || []
+  );
+
+  let removed = "";
+
+  const cleaned = text.replace(/[\u4e00-\u9fff]{2,}/g, run => {
+    const allNew = [...run].every(ch => !sourceChars.has(ch));
+    if (allNew) {
+      removed += run;
+      return "";
+    }
+    return run;
+  });
+
+  if (!removed) return text;
+
+  console.warn("🧹 移除模型憑空生成的中文：", { targetLang, removed, sourceText });
+
+  return cleaned.replace(/[ \t]{2,}/g, " ").trim();
+}
+
 function buildTranslationCacheKey(text, targetLang, industry, systemPrompt) {
   // 原本的 key 帶了 gid 和整段 systemPrompt：
   //  - gid 讓「同行業別、不同群組」無法共用快取，命中率大幅下降
@@ -1502,6 +1571,10 @@ async function translateWithChatGPT(
       .trim();
 
     // 共用輸出語系檢查 ＋ 繁中特殊處理
+    // 先清掉模型憑空生成的中文，再做後續判斷，
+    // 否則「殘留單位」「語系檢查」都會拿被污染的字串去判斷
+    out = stripHallucinatedChinese(out, text, targetLang);
+
     const unchanged = out.trim() === text.trim();
     const sourceHasChinese = /[\u4e00-\u9fff]/.test(text);
 
@@ -3119,6 +3192,20 @@ async function handleEvent(event) {
     }
   }
 
+  /*
+    只有文字訊息需要翻譯。
+    貼圖、圖片、影片、語音、檔案、位置一律忽略 —— 這些型別本來就不會走到
+    下面的文字處理，但明寫出來比較不會讓人誤以為漏掉了，
+    也方便日後要針對某個型別做事時知道該加在哪。
+  */
+  if (
+    event.type === "message" &&
+    event.message?.type &&
+    event.message.type !== "text"
+  ) {
+    return null;
+  }
+
   if (event.type === "message" && event.message?.type === "text" && gid && uid) {
     const rawText = event.message.text || "";
 
@@ -3171,7 +3258,18 @@ if (DEBUG_TRANSLATION && event.message?.mention) {
     const normalizedForDetect = normalizeTextForLangDetect(masked);
 
     if (!normalizedForDetect.trim()) return null;
-    if (isOnlyEmojiOrWhitespace(normalizedForDetect)) return null;
+
+    if (isOnlyEmojiOrWhitespace(normalizedForDetect)) {
+      if (DEBUG_TRANSLATION) {
+        // 印出碼位，方便確認是哪一種表情符號被擋下（PUA 會顯示成 U+Exxxx 之類）
+        const codepoints = [...normalizedForDetect]
+          .map(ch => "U+" + ch.codePointAt(0).toString(16).toUpperCase())
+          .join(" ");
+        console.log("🙂 表情符號訊息，略過翻譯：", codepoints);
+      }
+      return null;
+    }
+
     if (isSymbolOrNum(normalizedForDetect)) return null;
     // 單一英文字母通常是尺寸、代號、表格欄位或設備標記；不翻譯、不回覆。
 if (
