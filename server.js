@@ -92,6 +92,239 @@ const TRANSLATION_TOTAL_TIMEOUT_MS = Number(process.env.TRANSLATION_TIMEOUT_MS |
 // mention 還原等細節記錄只在需要時開啟，正式環境不要洗版
 const DEBUG_TRANSLATION = process.env.DEBUG_TRANSLATION === "1";
 
+/* ===================== 語音訊息翻譯 ===================== */
+
+/*
+  預設關閉。語音的單則成本遠高於文字（要下載音檔＋轉錄＋再翻譯 N 種語言），
+  所以做成需要明確開啟的功能，出事時也能立刻關掉而不用重新部署程式碼。
+*/
+const VOICE_ENABLED = process.env.VOICE_TRANSLATION_ENABLED === "1";
+
+// 音檔長度上限（秒）。LINE 的 webhook 會直接帶 duration，
+// 可以在「下載音檔之前」就擋掉，完全不花任何流量與費用。
+const VOICE_MAX_DURATION_SEC = Number(process.env.VOICE_MAX_DURATION_SEC || 60);
+
+// 下載大小上限。防止異常大的檔案吃光記憶體（Render 實例記憶體有限）
+const VOICE_MAX_BYTES = Number(process.env.VOICE_MAX_BYTES || 8 * 1024 * 1024);
+
+const VOICE_DOWNLOAD_TIMEOUT_MS = Number(process.env.VOICE_DOWNLOAD_TIMEOUT_MS || 15000);
+const VOICE_TRANSCRIBE_TIMEOUT_MS = Number(process.env.VOICE_TRANSCRIBE_TIMEOUT_MS || 60000);
+const VOICE_MODEL = process.env.VOICE_MODEL || "whisper-1";
+
+// 同時轉錄的上限。音檔會整個讀進記憶體，並行太多會直接把實例撐爆。
+const VOICE_MAX_CONCURRENT = Number(process.env.VOICE_MAX_CONCURRENT || 2);
+let voiceInFlight = 0;
+
+// 每個群組每分鐘的語音則數上限，避免有人連續灌語音把額度燒光
+const VOICE_PER_GROUP_PER_MIN = Number(process.env.VOICE_PER_GROUP_PER_MIN || 8);
+const voiceRateCounter = new LRUCache({ max: 1000, ttl: 60 * 1000 });
+
+/*
+  LINE 在沒收到 200 時會重送 webhook，同一則語音可能被處理多次。
+  文字重複處理只是浪費一點錢，語音重複轉錄則是成倍的成本，
+  所以用 messageId 去重。
+*/
+/*
+  Whisper 幻覺過濾。
+
+  這是語音轉錄最惡名昭彰的失效模式：音檔是靜音、雜訊或聽不清楚時，
+  模型不會回空字串，而是吐出訓練資料裡高頻出現的字幕結尾語，
+  例如「謝謝觀看」「請不吝點贊 訂閱 轉發」「字幕由 Amara.org 社群提供」。
+
+  工廠現場環境吵雜、常有誤觸錄音，這種輸出會很頻繁。
+  一旦放行，就會被當成正常訊息翻成四種語言貼進群組 —— 既花錢又干擾。
+*/
+const WHISPER_HALLUCINATION_PATTERNS = [
+  /謝謝(大家)?(觀看|收看|聆聽|收聽)/,
+  /請不吝(點贊|點讚)/,
+  /訂閱.{0,4}(轉發|分享|打賞)/,
+  /字幕(由|志願者|志愿者|組|组)/i,
+  /amara\.org/i,
+  /明鏡與點點|明镜与点点/,
+  /^(thank you|thanks)\s*(for|so much for)?\s*(watching|listening)/i,
+  /subtitles? by/i,
+  /please subscribe/i,
+  /^\s*you\s*$/i,
+  /^\s*(bye|okay|ok)\s*[.!]?\s*$/i,
+  /^[.。、,，!！?？\s]*$/
+];
+
+function isLikelyWhisperHallucination(text = "") {
+  const t = String(text).trim();
+  if (!t) return true;
+
+  // 過短的轉錄結果幾乎都是雜訊，翻譯出來也沒有意義
+  const letters = t.replace(/[^\p{L}\p{N}]/gu, "");
+  if (letters.length < 2) return true;
+
+  if (WHISPER_HALLUCINATION_PATTERNS.some(re => re.test(t))) return true;
+
+  /*
+    同一個短句被重複輸出也是典型幻覺（「好的好的好的好的」）。
+    中文沒有空白分隔，所以要分兩種方式檢查。
+  */
+  const compact = t.replace(/\s+/g, "");
+  if (compact.length >= 8 && /^(.{1,6}?)\1{3,}$/u.test(compact)) return true;
+
+  const parts = t.split(/[\s,，。.!！?？]+/).filter(Boolean);
+  if (parts.length >= 6) {
+    const unique = new Set(parts);
+    if (unique.size / parts.length < 0.34) return true;
+  }
+
+  return false;
+}
+
+/*
+  下載 LINE 的音檔內容。
+
+  刻意不使用 SDK 的 getMessageContent，改用 axios 串流：
+  可以邊下載邊累計位元組數，一超過上限就立刻中斷連線，
+  而不是等整個檔案下載完才發現太大。音檔全程只在記憶體，不落地。
+*/
+async function downloadLineAudio(messageId) {
+  const res = await axios.get(
+    `https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`,
+    {
+      headers: { Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}` },
+      responseType: "stream",
+      timeout: VOICE_DOWNLOAD_TIMEOUT_MS,
+      maxContentLength: VOICE_MAX_BYTES,
+      maxBodyLength: VOICE_MAX_BYTES
+    }
+  );
+
+  return await new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+
+    res.data.on("data", chunk => {
+      total += chunk.length;
+      if (total > VOICE_MAX_BYTES) {
+        res.data.destroy();
+        reject(new Error(`音檔超過上限 ${VOICE_MAX_BYTES} bytes`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    res.data.on("end", () => resolve(Buffer.concat(chunks)));
+    res.data.on("error", reject);
+  });
+}
+
+async function transcribeAudio(buffer, messageId) {
+  const form = new FormData();
+  // LINE 語音訊息是 m4a，OpenAI 直接支援，不需要 ffmpeg 轉檔
+  form.append("file", new Blob([buffer], { type: "audio/m4a" }), `${messageId}.m4a`);
+  form.append("model", VOICE_MODEL);
+
+  const res = await axios.post(
+    "https://api.openai.com/v1/audio/transcriptions",
+    form,
+    {
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      timeout: VOICE_TRANSCRIBE_TIMEOUT_MS,
+      maxBodyLength: Infinity
+    }
+  );
+
+  return (res.data?.text || "").trim();
+}
+
+/*
+  語音訊息主流程。
+
+  順序刻意由「便宜」排到「昂貴」：
+    功能開關 → 去重 → 長度 → 群組設定 → 限流 → 併發 → 額度 → 下載 → 轉錄
+  任何一關擋下都不會產生下一階段的成本。
+*/
+async function handleAudioMessage(event, gid, uid, replyToken) {
+  if (!VOICE_ENABLED) return null;
+
+  const messageId = event.message?.id;
+  if (!messageId) return null;
+
+  // 去重要放在最前面：LINE 重送 webhook 時不能重複轉錄
+  if (processedVoiceIds.has(messageId)) {
+    console.log("🔁 重複的語音訊息，略過：", messageId);
+    return null;
+  }
+  processedVoiceIds.set(messageId, true);
+
+  // duration 由 webhook 直接提供，可在下載前就擋掉過長音檔
+  const durationMs = Number(event.message?.duration || 0);
+  if (durationMs > VOICE_MAX_DURATION_SEC * 1000) {
+    console.log(`🎤 語音過長（${Math.round(durationMs / 1000)}秒），略過`);
+    await safeReplyOrPush(
+      replyToken,
+      gid,
+      i18n["zh-TW"].voiceTooLong.replace("{sec}", String(VOICE_MAX_DURATION_SEC))
+    );
+    return null;
+  }
+
+  // 沒設定語言的群組不需要轉錄
+  const langSet = groupLang.get(gid);
+  if (!langSet || langSet.size === 0) return null;
+
+  // 每群組每分鐘上限
+  const rateKey = `voice:${gid}`;
+  const count = (voiceRateCounter.get(rateKey) || 0) + 1;
+  voiceRateCounter.set(rateKey, count);
+  if (count > VOICE_PER_GROUP_PER_MIN) {
+    console.warn(`🚧 群組語音超過頻率上限：${gid}（${count}）`);
+    return null;
+  }
+
+  // 併發上限，避免同時多個音檔在記憶體
+  if (voiceInFlight >= VOICE_MAX_CONCURRENT) {
+    console.warn("🚧 語音轉錄併發已滿，略過此則");
+    return null;
+  }
+
+  // 額度要在下載與轉錄之前檢查，過期的訂閱不該產生任何成本
+  const useResult = await canUseGroup(gid);
+  if (!useResult.ok) return null;
+
+  voiceInFlight++;
+  try {
+    const buffer = await downloadLineAudio(messageId);
+    const transcript = await transcribeAudio(buffer, messageId);
+
+    if (DEBUG_TRANSLATION) {
+      console.log("🎤 轉錄結果：", JSON.stringify(transcript));
+    }
+
+    if (isLikelyWhisperHallucination(transcript)) {
+      console.log("🗑️ 轉錄結果疑似雜訊或幻覺，略過：", JSON.stringify(transcript));
+      return null;
+    }
+
+    // 轉錄本身也是成本，單獨計一次
+    await incrementMonthlyUsage(useResult.inviterUserId, 1, transcript.length);
+
+    /*
+      轉錄結果丟回文字管線，套用完全相同的過濾與翻譯邏輯。
+      前綴讓群組看得出來這則是語音轉出來的，而不是有人打字。
+    */
+    return await dispatchTranslation({
+      gid,
+      uid,
+      replyToken,
+      message: { type: "text", text: transcript },
+      prefix: `🎤 ${transcript}\n\n`
+    });
+  } catch (e) {
+    console.error("語音處理失敗：", e.message);
+    return null;
+  } finally {
+    voiceInFlight--;
+  }
+}
+
+/* ===================== 語音訊息翻譯 結束 ===================== */
+
 const groupLang = new Map();
 const groupInviter = new Map();
 const groupIndustry = new Map();
@@ -158,7 +391,8 @@ const i18n = {
     invalidUserId: "❌ userId 格式不正確",
     groupBlocked:
       "⚠️ 此群組先前已停用翻譯服務，目前無法使用。\n" +
-      "若需重新啟用，請聯繫管理員解除後再試。"
+      "若需重新啟用，請聯繫管理員解除後再試。",
+    voiceTooLong: "⚠️ 語音訊息超過 {sec} 秒，未進行翻譯。請分段錄製。"
   }
 };
 
@@ -1841,7 +2075,7 @@ if (DEBUG_TRANSLATION) {
 return restored;
 }
 
-async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, ownerUserId, hasOfficialMentionData = false) {
+async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, ownerUserId, hasOfficialMentionData = false, prefix = "") {
   const allNeededLangs = new Set();
   const langOutputs = {};
 
@@ -1970,7 +2204,8 @@ const shouldSkipSourceLanguage =
   }
 
   const userName = await getGroupMemberDisplayName(gid, uid);
-  const fullText = `【${userName}】說：\n${replyText.trim()}`;
+  // prefix 用於語音訊息：先顯示轉錄原文，讓群組知道機器人聽到了什麼
+  const fullText = `【${userName}】說：\n${prefix}${replyText.trim()}`;
 
   // 這裡原本用 safeReply（明確不 push）。但翻譯是背景進行的，
   // 主模型 25 秒 + fallback 25 秒之後 replyToken 很可能已失效，
@@ -3069,6 +3304,70 @@ app.post(
   }
 );
 
+/*
+  文字翻譯派發。文字訊息與語音轉錄結果共用同一條管線，
+  這樣兩者的過濾規則（表情符號、代號、語系偵測、額度）永遠一致，
+  不會出現「文字擋掉了、語音卻放行」的落差。
+
+  message 可以是真的 LINE 文字訊息，也可以是語音轉錄後合成的
+  { type: "text", text: 轉錄結果 }。
+*/
+async function dispatchTranslation({ gid, uid, replyToken, message, prefix = "" }) {
+  const langSet = groupLang.get(gid);
+  if (!langSet || langSet.size === 0) return null;
+
+  if (DEBUG_TRANSLATION && message?.mention) {
+    console.log("RAW official mention:", JSON.stringify(message.mention));
+  }
+
+  const { masked, segments, hasOfficialMentionData } = extractMentionsFromLineMessage(message);
+  const normalizedForDetect = normalizeTextForLangDetect(masked);
+
+  if (!normalizedForDetect.trim()) return null;
+
+  if (isOnlyEmojiOrWhitespace(normalizedForDetect)) {
+    if (DEBUG_TRANSLATION) {
+      // 印出碼位，方便確認是哪一種表情符號被擋下（PUA 會顯示成 U+Exxxx 之類）
+      const codepoints = [...normalizedForDetect]
+        .map(ch => "U+" + ch.codePointAt(0).toString(16).toUpperCase())
+        .join(" ");
+      console.log("🙂 表情符號訊息，略過翻譯：", codepoints);
+    }
+    return null;
+  }
+
+  if (isSymbolOrNum(normalizedForDetect)) return null;
+
+  // 單一英文字母通常是尺寸、代號、表格欄位或設備標記；不翻譯、不回覆。
+  if (
+    /^[A-Za-z]$/.test(normalizedForDetect) ||
+    (
+      /^[A-Za-z0-9_-]{2,10}$/.test(normalizedForDetect) &&
+      (
+        /\d/.test(normalizedForDetect) ||
+        normalizedForDetect === normalizedForDetect.toUpperCase()
+      )
+    )
+  ) {
+    return null;
+  }
+
+  const sourceLang = detectLang(normalizedForDetect);
+
+  const useResult = await canUseGroup(gid);
+  if (!useResult.ok) return null;
+
+  const rawLines = masked.split("\n");
+  if (!rawLines.length) return null;
+
+  processTranslationInBackground(
+    replyToken, gid, uid, masked, segments, rawLines,
+    langSet, sourceLang, useResult.inviterUserId, hasOfficialMentionData, prefix
+  ).catch(e => console.error("背景翻譯失敗:", e));
+
+  return null;
+}
+
 async function handleEvent(event) {
   const gid = event.source?.groupId || null;
   const uid = event.source?.userId || null;
@@ -3192,9 +3491,18 @@ async function handleEvent(event) {
     }
   }
 
+  // 語音訊息：轉錄後走同一條翻譯管線
+  if (
+    event.type === "message" &&
+    event.message?.type === "audio" &&
+    gid && uid
+  ) {
+    return handleAudioMessage(event, gid, uid, replyToken);
+  }
+
   /*
-    只有文字訊息需要翻譯。
-    貼圖、圖片、影片、語音、檔案、位置一律忽略 —— 這些型別本來就不會走到
+    其餘非文字訊息一律忽略。
+    貼圖、圖片、影片、檔案、位置 —— 這些型別本來就不會走到
     下面的文字處理，但明寫出來比較不會讓人誤以為漏掉了，
     也方便日後要針對某個型別做事時知道該加在哪。
   */
@@ -3248,56 +3556,7 @@ async function handleEvent(event) {
 
     if (rawText.trim().startsWith("!")) return null;
 
-    const langSet = groupLang.get(gid);
-    if (!langSet || langSet.size === 0) return null;
-if (DEBUG_TRANSLATION && event.message?.mention) {
-  console.log("RAW official mention:", JSON.stringify(event.message.mention));
-}
-
-    const { masked, segments, hasOfficialMentionData } = extractMentionsFromLineMessage(event.message);
-    const normalizedForDetect = normalizeTextForLangDetect(masked);
-
-    if (!normalizedForDetect.trim()) return null;
-
-    if (isOnlyEmojiOrWhitespace(normalizedForDetect)) {
-      if (DEBUG_TRANSLATION) {
-        // 印出碼位，方便確認是哪一種表情符號被擋下（PUA 會顯示成 U+Exxxx 之類）
-        const codepoints = [...normalizedForDetect]
-          .map(ch => "U+" + ch.codePointAt(0).toString(16).toUpperCase())
-          .join(" ");
-        console.log("🙂 表情符號訊息，略過翻譯：", codepoints);
-      }
-      return null;
-    }
-
-    if (isSymbolOrNum(normalizedForDetect)) return null;
-    // 單一英文字母通常是尺寸、代號、表格欄位或設備標記；不翻譯、不回覆。
-if (
-  /^[A-Za-z]$/.test(normalizedForDetect) ||
-  (
-    /^[A-Za-z0-9_-]{2,10}$/.test(normalizedForDetect) &&
-    (
-      /\d/.test(normalizedForDetect) ||
-      normalizedForDetect === normalizedForDetect.toUpperCase()
-    )
-  )
-) {
-  return null;
-}
-
-
-    const sourceLang = detectLang(normalizedForDetect);
-
-    const useResult = await canUseGroup(gid);
-    if (!useResult.ok) return null;
-
- const rawLines = masked.split("\n");
-    if (!rawLines.length) return null;
-
-    processTranslationInBackground(
-      replyToken, gid, uid, masked, segments, rawLines,
-      langSet, sourceLang, useResult.inviterUserId, hasOfficialMentionData
-    ).catch(e => console.error("背景翻譯失敗:", e));
+    return dispatchTranslation({ gid, uid, replyToken, message: event.message });
   }
 
   return null;
