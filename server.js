@@ -124,6 +124,13 @@ const voiceRateCounter = new LRUCache({ max: 1000, ttl: 60 * 1000 });
   文字重複處理只是浪費一點錢，語音重複轉錄則是成倍的成本，
   所以用 messageId 去重。
 */
+const processedVoiceIds = new LRUCache({ max: 5000, ttl: 60 * 60 * 1000 });
+
+/*
+  LINE 在沒收到 200 時會重送 webhook，同一則語音可能被處理多次。
+  文字重複處理只是浪費一點錢，語音重複轉錄則是成倍的成本，
+  所以用 messageId 去重。
+*/
 /*
   Whisper 幻覺過濾。
 
