@@ -236,6 +236,8 @@ async function transcribeAudio(buffer, messageId) {
     }
   );
 
+  recordTokenUsage(res.data?.usage, VOICE_MODEL, "transcribe");
+
   return (res.data?.text || "").trim();
 }
 
@@ -1572,6 +1574,56 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
       ? `工作類型：${industry}。僅在原文明確涉及此領域時，使用常用、清楚的術語。`
       : "");
 
+  /*
+    人名規則。
+
+    原本的第 6 條只列了公司名、廠區名、產品名等，人名不在清單裡，
+    而且措辭是「可以原樣保留」——是允許而非規定。
+    結果同一則加班名單，越南文保留漢字、印尼文改成拼音，兩種做法。
+
+    加班名單是要讓工人認出自己的名字，拼法飄動比看不懂更危險，
+    所以這裡不只規定「要轉拼音」，還指定拼寫系統與大小寫，
+    讓「阿力」每次都是 A-Li，不會這次 A-Li、下次 Ah Lek。
+  */
+  /*
+    人名規則。
+
+    原本第 6 條只列公司名、廠區名、產品名，人名不在清單裡，
+    措辭又是「可以原樣保留」——是允許而非規定，
+    結果同一則加班名單，越南文保留漢字、印尼文轉成拼音，兩種做法。
+
+    最大的陷阱是漢越音：越南文有自己的漢字讀音系統，
+    「阿凱」照漢越音會變成 A Khải、「宜丸」變成 Nghi Hoàn，
+    跟工廠現場實際喊的華語發音完全對不上，工人反而認不出自己。
+    所以規則必須綁定「華語發音」，只是改用目標語言的文字書寫。
+  */
+  const nameExamples = {
+    vi: "阿安 → A An、阿凱 → A Khai、阿力 → A Li、宜丸 → Yi Oan",
+    id: "阿安 → A An、阿凱 → A Khai、阿力 → A Li、宜丸 → I Wan",
+    th: "阿安 → อา อาน、阿凱 → อา ไค、阿力 → อา ลี่、宜丸 → อี้ หวาน",
+    en: "阿安 → A An、阿凱 → A Kai、阿力 → A Li、宜丸 → Yi Wan"
+  };
+
+  const personNameRule =
+    targetLang === "zh-TW"
+      ? `
+人名規則：
+- 目標語言是繁體中文，人名以中文書寫即可。
+- 原文若是拼音或外文姓名（例如 Nguyen Van A、Somchai），保留原樣，不要音譯成漢字。
+`.trim()
+      : `
+人名規則（務必嚴格遵守）：
+- 所有人名、暱稱、綽號一律轉寫，不得保留中文字。
+- 轉寫依據是「這個名字的華語發音」，用「${langLabel}」自己的文字與拼寫習慣書寫，
+  讓${langLabel}母語者照著念出來會接近原本的華語發音。
+- 嚴禁使用該語言傳統的漢字讀音系統。
+  例如越南文不可使用漢越音：「阿凱」不是「A Khải」，「宜丸」不是「Nghi Hoàn」。
+- 不要把名字意譯，也不要改用該語言的常見人名代替。
+- 參考寫法：${nameExamples[targetLang] || nameExamples.en}
+- 同一則訊息中，同一個人名的寫法必須完全一致。
+- 人名不適用第 6 條的「可原樣保留」，一律轉寫。
+`.trim();
+
   const targetLanguageRule = `
 輸出語言規則：
 - 本次目標語言是「${langLabel}」。
@@ -1612,8 +1664,10 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 5. 保留原文的換行格式。只輸出翻譯結果，不要加上說明、前後綴或語言名稱。
 6. 公司名稱、客戶名稱、地點名稱、廠區名稱、站所名稱、產品名稱或其他專有識別名稱，
 若沒有可靠、常用的目標語言名稱，可以原樣保留；其餘描述、動作、故障情況、維修項目與指示，必須翻譯為目標語言。
+   注意：本條不包含人名。人名一律依下方「人名規則」轉寫。
 
 ${industryContext}
+${personNameRule}
 ${targetLanguageRule}
 `.trim();
 }
@@ -1730,6 +1784,32 @@ function stripHallucinatedChinese(out = "", sourceText = "", targetLang = "") {
   return cleaned.replace(/[ \t]{2,}/g, " ").trim();
 }
 
+/*
+  偵測「非繁中的輸出裡殘留了原文的中文人名」。
+
+  這一條無法交給 isOutputValidForLang：它看的是中文佔比，
+  加班名單裡 12 個中文字配上 53 個字元只有 0.23，遠低於門檻，
+  整段會被判定合格而直接貼出去。
+
+  也不能沿用 stripHallucinatedChinese —— 那支專門清「原文沒有的」中文，
+  而人名恰恰是原文有的，所以會被保留。
+
+  這裡的判斷同樣收得很窄：只在「輸出的中文字全都來自原文」時才成立，
+  代表模型是照抄而不是翻譯。公司名、廠區名照第 6 條仍可保留，
+  所以門檻設在 4 個字以上，避免單一廠名觸發。
+*/
+function hasUntranslatedChineseNames(out = "", sourceText = "", targetLang = "") {
+  if (targetLang === "zh-TW") return false;
+
+  const outChinese = String(out).match(/[\u4e00-\u9fff]/g) || [];
+  if (outChinese.length < 4) return false;
+
+  const sourceChars = new Set(String(sourceText).match(/[\u4e00-\u9fff]/g) || []);
+
+  // 全部來自原文 → 是照抄，不是幻覺
+  return outChinese.every(ch => sourceChars.has(ch));
+}
+
 function buildTranslationCacheKey(text, targetLang, industry, systemPrompt) {
   // 原本的 key 帶了 gid 和整段 systemPrompt：
   //  - gid 讓「同行業別、不同群組」無法共用快取，命中率大幅下降
@@ -1741,6 +1821,61 @@ function buildTranslationCacheKey(text, targetLang, industry, systemPrompt) {
     .slice(0, 8);
 
   return `${targetLang}:${industry || ""}:${promptHash}:${text}`;
+}
+
+/*
+  Token 用量統計。
+
+  GPT-5.6 之後，快取寫入要收 1.25 倍的未快取 input 費率，讀取則是 0.1 倍，
+  而且可快取的前綴至少要 1024 tokens。也就是說快取從「開了就賺」變成「要算才賺」：
+  寫入多、讀取少的話反而比不快取更貴。
+
+  在調整 prompt 結構之前，必須先有實際數據，否則只是憑感覺賭。
+  這裡累計各項 token，用 /admin/token-usage 就能看，不必翻 log。
+*/
+const tokenStats = {
+  since: new Date().toISOString(),
+  calls: 0,
+  promptTokens: 0,
+  cachedTokens: 0,
+  cacheWriteTokens: 0,
+  completionTokens: 0,
+  byModel: {}
+};
+
+function recordTokenUsage(usage, modelName, targetLang) {
+  if (!usage) return;
+
+  // 不同 API 版本欄位名稱不一致，兩種都接
+  const prompt = usage.prompt_tokens ?? usage.input_tokens ?? 0;
+  const completion = usage.completion_tokens ?? usage.output_tokens ?? 0;
+  const cached =
+    usage.prompt_tokens_details?.cached_tokens ??
+    usage.cached_tokens ??
+    0;
+  const cacheWrite =
+    usage.prompt_tokens_details?.cache_write_tokens ??
+    usage.cache_write_tokens ??
+    0;
+
+  tokenStats.calls++;
+  tokenStats.promptTokens += prompt;
+  tokenStats.completionTokens += completion;
+  tokenStats.cachedTokens += cached;
+  tokenStats.cacheWriteTokens += cacheWrite;
+
+  const m = (tokenStats.byModel[modelName] ||= {
+    calls: 0, promptTokens: 0, cachedTokens: 0, cacheWriteTokens: 0
+  });
+  m.calls++;
+  m.promptTokens += prompt;
+  m.cachedTokens += cached;
+  m.cacheWriteTokens += cacheWrite;
+
+  // 一行摘要，方便直接在 Render log 上看趨勢
+  console.log(
+    `💰 tokens ${modelName} → ${targetLang} | prompt=${prompt} cached=${cached} write=${cacheWrite} out=${completion}`
+  );
 }
 
 async function translateWithChatGPT(
@@ -1801,6 +1936,8 @@ async function translateWithChatGPT(
     timeout: OPENAI_TIMEOUT_MS
   }
 );
+
+    recordTokenUsage(res.data?.usage, modelName, targetLang);
 
     let out =
       res.data?.choices?.[0]?.message?.content?.trim() || "";
@@ -1864,21 +2001,20 @@ async function translateWithChatGPT(
         const fallbackPrompt = `
 ${buildTranslationPrompt(targetLang, industry, true)}
 
-FINAL OUTPUT CORRECTION — MANDATORY:
-The previous response failed to translate: it echoed the source language
-or produced a different language than requested.
+輸出修正指令（務必遵守）：
+上一次的回覆沒有完成翻譯：它照抄了原文語言，或輸出了要求以外的語言。
 
-Translate the user's message into ${targetLanguageName}. ${sourceClause}
+請將使用者的訊息翻譯成「${targetLanguageName}」。${sourceClause}
 
-Output requirements:
-- Output ONLY the ${targetLanguageName} translation.
-- Do NOT copy or repeat the source sentence in its original language.
-- Do NOT answer in any language other than ${targetLanguageName}.
-- Translate all repair actions, equipment names, fault descriptions, materials and instructions.
-- A short company name, factory name, place name, model number, code, quantity,
-  phone number, date, time, URL, Email, or __MENTION_n__ placeholder may remain unchanged.
-- The output must contain substantial ${targetLanguageName} text.
-- Do not explain. Do not add a title.
+輸出要求：
+- 只輸出「${targetLanguageName}」的翻譯結果。
+- 不可照抄或重複原文語言的句子。
+- 不可使用「${targetLanguageName}」以外的任何語言回覆。
+- 維修動作、設備名稱、故障描述、材料與指示，全部都要翻譯。
+- 簡短的公司名、廠區名、地名、型號、代碼、數量、電話、日期、時間、
+  URL、Email 或 __MENTION_n__ 佔位符，可以維持原樣。
+- 輸出必須包含足夠份量的「${targetLanguageName}」內容。
+- 不要加說明，不要加標題。
 `.trim();
 
         console.warn("↪️ Luna 輸出不合格，改用 gpt-4.1-mini fallback：", {
@@ -1922,23 +2058,62 @@ Output requirements:
       重試一次，而且只有在重試結果確實變好時才採用。
       重試失敗就沿用原本的翻譯 —— 局部漏翻仍然遠比一句錯誤訊息有用。
     */
+    /*
+      輸出裡殘留了原文的中文人名（模型照抄而非轉寫）。
+      跟殘留計量單位一樣屬於「大致正確、局部漏翻」，
+      所以走同一種軟性重試：只有重試結果確實變好才採用。
+    */
+    if (retry < 1 && hasUntranslatedChineseNames(out, text, targetLang)) {
+      const targetLanguageName = LANG_ENGLISH_NAMES[targetLang] || targetLang;
+
+      const nameFixPrompt = `
+${buildTranslationPrompt(targetLang, industry, true)}
+
+人名轉寫修正（務必遵守）：
+上一次的回覆把中文人名照抄出來，沒有轉寫。
+
+請重新輸出「${targetLanguageName}」的翻譯，並且：
+- 每個人名與暱稱都依「華語發音」轉寫，
+  用「${targetLanguageName}」自己的文字與拼寫習慣書寫，
+  讓該語言的母語者念出來會接近原本的華語發音。
+- 嚴禁使用該語言傳統的漢字讀音（越南文不可用漢越音：「阿凱」不是「A Khải」）。
+- 不要把名字意譯，也不要換成該語言的常見人名。
+- 人名中不可殘留任何中文字。
+- 其餘內容維持不變。只輸出翻譯結果。
+`.trim();
+
+      console.warn("⚠️ 輸出殘留中文人名，嘗試轉寫：", { targetLang, out });
+
+      const retried = await translateWithChatGPT(
+        text, targetLang, gid, retry + 1, nameFixPrompt, "gpt-4.1-mini", { sourceLang }
+      );
+
+      const improved =
+        typeof retried === "string" &&
+        retried.trim() &&
+        isOutputValidForLang(retried, targetLang) &&
+        !hasUntranslatedChineseNames(retried, text, targetLang);
+
+      if (improved) out = retried;
+      else console.warn("↩️ 人名轉寫未改善，沿用原譯文");
+    }
+
     if (retry < 1 && hasLeftoverChineseUnit(out, targetLang)) {
       const targetLanguageName = LANG_ENGLISH_NAMES[targetLang] || targetLang;
 
       const unitFixPrompt = `
 ${buildTranslationPrompt(targetLang, industry, true)}
 
-UNIT CORRECTION — MANDATORY:
-The previous response left Chinese measure words untranslated
-(for example 米 / 條 / 支 / 個 / 台 / 片 / 張 / 層).
+計量單位修正（務必遵守）：
+上一次的回覆殘留了未翻譯的中文單位（例如 米 / 條 / 支 / 個 / 台 / 片 / 張 / 層）。
 
-Rewrite the translation into ${targetLanguageName} so that:
-- Every quantity and dimension uses ${targetLanguageName} unit words.
-  "2米X 1條" must become the ${targetLanguageName} equivalent of "2 meters X 1 strip".
-- Arabic numerals stay as digits.
-- Sizes already written in Latin form (e.g. 98cmx291cm) stay unchanged.
-- No Chinese unit character may remain anywhere in the output.
-- Output ONLY the translation. Do not explain.
+請重新輸出「${targetLanguageName}」的翻譯，並且：
+- 所有數量與尺寸都要使用「${targetLanguageName}」的單位詞。
+  「2米X 1條」必須翻成該語言中「2 公尺 X 1 條」的對應說法。
+- 阿拉伯數字維持數字形式。
+- 已經是英數格式的尺寸（例如 98cmx291cm）維持原樣。
+- 輸出中任何位置都不可殘留中文單位字。
+- 只輸出翻譯結果，不要加說明。
 `.trim();
 
       console.warn("⚠️ 輸出殘留中文計量單位，嘗試修正：", { targetLang, out });
@@ -2826,6 +3001,48 @@ adminRouter.delete("/groups/:gid/settings", async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
+adminRouter.get("/token-usage", (req, res) => {
+  const {
+    promptTokens, cachedTokens, cacheWriteTokens, completionTokens, calls
+  } = tokenStats;
+
+  /*
+    快取是否划算的判斷依據。
+    寫入 1.25 倍、讀取 0.1 倍、未快取 1.0 倍，
+    所以每寫一次要有大約 0.28 次以上的讀取才回本。
+    比值明顯小於 1 就代表在付溢價卻收不到折扣，那時不如不要快取。
+  */
+  const readWriteRatio = cacheWriteTokens > 0
+    ? Number((cachedTokens / cacheWriteTokens).toFixed(2))
+    : null;
+
+  const uncachedPrompt = Math.max(promptTokens - cachedTokens - cacheWriteTokens, 0);
+
+  // 以未快取價為 1 的相對成本，方便直接比較「有沒有比不快取便宜」
+  const relativeInputCost = promptTokens > 0
+    ? Number(((uncachedPrompt + cacheWriteTokens * 1.25 + cachedTokens * 0.1) / promptTokens).toFixed(3))
+    : null;
+
+  res.json({
+    success: true,
+    since: tokenStats.since,
+    calls,
+    promptTokens,
+    completionTokens,
+    cachedTokens,
+    cacheWriteTokens,
+    uncachedPrompt,
+    readWriteRatio,
+    relativeInputCost,
+    hint: cacheWriteTokens === 0 && cachedTokens === 0
+      ? "完全沒有快取活動，可能是 prompt 未達 1024 token 門檻"
+      : (readWriteRatio !== null && readWriteRatio < 1
+          ? "讀取少於寫入，目前在付快取溢價卻沒賺回來"
+          : "快取讀取正常"),
+    byModel: tokenStats.byModel
+  });
+});
+
 adminRouter.get("/groups-blocked", async (req, res) => {
   try {
     const snapshot = await db.collection("deletedGroups")
