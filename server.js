@@ -1801,13 +1801,30 @@ function stripHallucinatedChinese(out = "", sourceText = "", targetLang = "") {
 function hasUntranslatedChineseNames(out = "", sourceText = "", targetLang = "") {
   if (targetLang === "zh-TW") return false;
 
-  const outChinese = String(out).match(/[\u4e00-\u9fff]/g) || [];
-  if (outChinese.length < 4) return false;
-
   const sourceChars = new Set(String(sourceText).match(/[\u4e00-\u9fff]/g) || []);
+  const runs = String(out).match(/[\u4e00-\u9fff]+/g) || [];
+  if (!runs.length) return false;
 
-  // 全部來自原文 → 是照抄，不是幻覺
-  return outChinese.every(ch => sourceChars.has(ch));
+  /*
+    要區分「一串沒轉寫的人名」和「第 6 條允許保留的公司／廠區名」。
+
+    誤判實例：「嘉里大榮雲林所-更換旋開門把手*1」翻成越南文時，
+    公司名整段保留是正確行為，卻被判成人名沒轉寫而觸發重試，
+    結果音譯成「Kari Đa Vinh Vân Lâm Sở」，比保留原名更糟。
+
+    兩者的結構差異很明確：
+      人名清單 → 多個 2~3 字的短片段（阿安、阿凱、阿力…）
+      公司名   → 單一較長的片段（嘉里大榮雲林所）
+
+    所以長片段一律放行，只有「短片段出現三次以上」才判定為人名清單。
+    門檻設在三次，是為了讓一則訊息同時提到兩個公司名時不會誤觸發。
+  */
+  const shortRuns = runs.filter(r => {
+    if (r.length > 3) return false;                     // 長片段：視為專有名稱，放行
+    return [...r].every(ch => sourceChars.has(ch));     // 必須全部來自原文，才是照抄
+  });
+
+  return shortRuns.length >= 3;
 }
 
 function buildTranslationCacheKey(text, targetLang, industry, systemPrompt) {
