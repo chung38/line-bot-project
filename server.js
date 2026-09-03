@@ -1577,17 +1577,6 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   /*
     人名規則。
 
-    原本的第 6 條只列了公司名、廠區名、產品名等，人名不在清單裡，
-    而且措辭是「可以原樣保留」——是允許而非規定。
-    結果同一則加班名單，越南文保留漢字、印尼文改成拼音，兩種做法。
-
-    加班名單是要讓工人認出自己的名字，拼法飄動比看不懂更危險，
-    所以這裡不只規定「要轉拼音」，還指定拼寫系統與大小寫，
-    讓「阿力」每次都是 A-Li，不會這次 A-Li、下次 Ah Lek。
-  */
-  /*
-    人名規則。
-
     原本第 6 條只列公司名、廠區名、產品名，人名不在清單裡，
     措辭又是「可以原樣保留」——是允許而非規定，
     結果同一則加班名單，越南文保留漢字、印尼文轉成拼音，兩種做法。
@@ -1597,6 +1586,15 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
     跟工廠現場實際喊的華語發音完全對不上，工人反而認不出自己。
     所以規則必須綁定「華語發音」，只是改用目標語言的文字書寫。
   */
+  // 公司名／廠區名的音譯範例。必須跟人名一樣分語言，
+  // 否則泰文句子裡會夾著「Zhuang Xi」這種泰籍員工念不出來的拉丁拼寫。
+  const orgExamples = {
+    vi: "米多力 → Mi Đô Lì、庒西 → Choang Xi",
+    id: "米多力 → Mi Duo Li、庒西 → Cuang Si",
+    th: "米多力 → หมี่ ตัว ลี่、庒西 → จวง ซี",
+    en: "米多力 → Mi Duo Li、庒西 → Zhuang Xi"
+  };
+
   const nameExamples = {
     vi: "阿安 → A An、阿凱 → A Khai、阿力 → A Li、宜丸 → Yi Oan",
     id: "阿安 → A An、阿凱 → A Khai、阿力 → A Li、宜丸 → I Wan",
@@ -1612,7 +1610,9 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 - 原文若是拼音或外文姓名（例如 Nguyen Van A、Somchai），保留原樣，不要音譯成漢字。
 `.trim()
       : `
-人名規則（務必嚴格遵守）：
+名稱規則（務必嚴格遵守）：
+
+【人名】
 - 所有人名、暱稱、綽號一律轉寫，不得保留中文字。
 - 轉寫依據是「這個名字的華語發音」，用「${langLabel}」自己的文字與拼寫習慣書寫，
   讓${langLabel}母語者照著念出來會接近原本的華語發音。
@@ -1621,7 +1621,17 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 - 不要把名字意譯，也不要改用該語言的常見人名代替。
 - 參考寫法：${nameExamples[targetLang] || nameExamples.en}
 - 同一則訊息中，同一個人名的寫法必須完全一致。
-- 人名不適用第 6 條的「可原樣保留」，一律轉寫。
+
+【公司名、廠區名、地名、產品名】
+- 也一律不得保留中文字，依下列優先順序處理：
+  1. 該名稱若有廣為使用的官方外文名稱，直接使用該名稱。
+     例如「嘉里大榮」的官方名稱是「Kerry TJ」，就用 Kerry TJ。
+  2. 沒有官方外文名稱時，比照上面【人名】的規則，
+     依華語發音用「${langLabel}」的文字轉寫。
+     例如：${orgExamples[targetLang] || orgExamples.en}
+- 不確定是否有官方名稱時，一律選擇第 2 種（音譯），不要自行創造英文名稱。
+- 嚴禁使用漢越音等傳統漢字讀音來轉寫公司名。
+- 同一則訊息中，同一個名稱的寫法必須完全一致。
 `.trim();
 
   const targetLanguageRule = `
@@ -1630,7 +1640,7 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 - 必須將原文中可翻譯的內容完整翻譯為「${langLabel}」。
 - 不得直接照抄原文，不得輸出以中文為主的內容。
 - 公司名稱、客戶名稱、廠區名稱、地名、站所名稱、產品名稱或內部識別名稱，
-  若沒有可靠的常用譯名，可以保留原樣。
+  依「名稱規則」處理，不可殘留中文字。
 - 但是故障情況、維修動作、設備零件、材料、數量描述、工作指示與一般名詞，
   一律必須翻譯成「${langLabel}」。
 - 除機台代號、型號、批號、料號、工單號、ERP 代碼、數字、日期、時間、
@@ -1641,6 +1651,15 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   特別是網站名稱、網址、廣告詞、推薦語或結尾備註。
   原文沒有的東西，輸出就不能有。
 - 只輸出翻譯結果，不要解釋、不要加標題、不要說明翻譯規則。
+${
+  targetLang === "zh-TW"
+    ? `- 一律使用台灣的用語與習慣說法，不可使用中國大陸用語。
+  例如：冷媒（非「製冷劑」）、堆高機（非「叉車」）、馬達（非「電機」）、
+  品質（非「質量」）、軟體（非「軟件」）、螺絲起子（非「螺絲刀」）、
+  影片（非「視頻」）、資訊（非「信息」）、專案（非「項目」）。
+- 必須使用繁體字，不可出現任何簡體字。`
+    : ""
+}
 `.trim();
 
 
@@ -1662,9 +1681,9 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
    例如「2米X 1條」要翻成目標語言的「2 公尺 X 1 條」對應說法，不可原樣輸出「2米X 1條」。
    已經是英數格式的尺寸（如 98cmx291cm）則保留原樣。
 5. 保留原文的換行格式。只輸出翻譯結果，不要加上說明、前後綴或語言名稱。
-6. 公司名稱、客戶名稱、地點名稱、廠區名稱、站所名稱、產品名稱或其他專有識別名稱，
-若沒有可靠、常用的目標語言名稱，可以原樣保留；其餘描述、動作、故障情況、維修項目與指示，必須翻譯為目標語言。
-   注意：本條不包含人名。人名一律依下方「人名規則」轉寫。
+6. 公司名稱、客戶名稱、地點名稱、廠區名稱、站所名稱、產品名稱等專有名稱，
+   一律依下方「名稱規則」處理，不可原樣保留中文字。
+   其餘描述、動作、故障情況、維修項目與指示，必須翻譯為目標語言。
 
 ${industryContext}
 ${personNameRule}
@@ -1802,29 +1821,22 @@ function hasUntranslatedChineseNames(out = "", sourceText = "", targetLang = "")
   if (targetLang === "zh-TW") return false;
 
   const sourceChars = new Set(String(sourceText).match(/[\u4e00-\u9fff]/g) || []);
-  const runs = String(out).match(/[\u4e00-\u9fff]+/g) || [];
+  const runs = String(out).match(/[\u4e00-\u9fff]{2,}/g) || [];
   if (!runs.length) return false;
 
   /*
-    要區分「一串沒轉寫的人名」和「第 6 條允許保留的公司／廠區名」。
+    偵測「輸出裡殘留了照抄原文的中文名稱」。
 
-    誤判實例：「嘉里大榮雲林所-更換旋開門把手*1」翻成越南文時，
-    公司名整段保留是正確行為，卻被判成人名沒轉寫而觸發重試，
-    結果音譯成「Kari Đa Vinh Vân Lâm Sở」，比保留原名更糟。
+    需求已改為人名與公司名都要轉寫，所以這裡不再依片段長度豁免。
+    先前為了避開「嘉里大榮雲林所」誤判而放行長片段，
+    現在長片段同樣屬於該轉寫卻沒轉寫，一併納入。
 
-    兩者的結構差異很明確：
-      人名清單 → 多個 2~3 字的短片段（阿安、阿凱、阿力…）
-      公司名   → 單一較長的片段（嘉里大榮雲林所）
-
-    所以長片段一律放行，只有「短片段出現三次以上」才判定為人名清單。
-    門檻設在三次，是為了讓一則訊息同時提到兩個公司名時不會誤觸發。
+    仍然要求「片段中的字全部來自原文」，用來區隔
+    stripHallucinatedChinese 負責的那種憑空生成的中文。
+    單一中文字不計入：那類殘留通常是計量單位，由
+    hasLeftoverChineseUnit 處理，避免兩支重複觸發重試。
   */
-  const shortRuns = runs.filter(r => {
-    if (r.length > 3) return false;                     // 長片段：視為專有名稱，放行
-    return [...r].every(ch => sourceChars.has(ch));     // 必須全部來自原文，才是照抄
-  });
-
-  return shortRuns.length >= 3;
+  return runs.some(r => [...r].every(ch => sourceChars.has(ch)));
 }
 
 function buildTranslationCacheKey(text, targetLang, industry, systemPrompt) {
@@ -2301,9 +2313,22 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
   const chineseRatio = chineseLen / totalMeaningfulLen;
   const foreignLen = thaiLen + viCharLen + latinLen;
 
+  /*
+    「中文為主」的判斷原本只看比例，但工廠訊息大量是「中文 + 型號數字」，
+    比例天生就低。例如「冷媒507 ×25K」只有 2 個中文字、佔比 0.22，
+    會被判成非中文，於是 zh-TW 被加進目標語言，
+    繁中原文又被翻一次繁中，還把台灣用語「冷媒」改成中國用語「製冷劑」。
+
+    因此補上第三個條件：有中文、且完全沒有其他語言的「詞」時，
+    視為中文來源。單獨的英文字母（K、X）是單位或代號，不算詞，
+    所以要求連續兩個以上字母才算數。
+  */
+  const latinWordCount = (normalizedMergedText.match(/[A-Za-z]{2,}/g) || []).length;
+
   const isChineseDominant =
     (chineseLen >= 2 && chineseRatio >= 0.45) ||
-    (chineseLen >= 4 && foreignLen === 0);
+    (chineseLen >= 4 && foreignLen === 0) ||
+    (chineseLen >= 2 && thaiLen === 0 && viCharLen === 0 && latinWordCount === 0);
 
 if (!isChineseDominant) {
   allNeededLangs.add("zh-TW");
