@@ -92,6 +92,25 @@ const TRANSLATION_TOTAL_TIMEOUT_MS = Number(process.env.TRANSLATION_TIMEOUT_MS |
 // mention 還原等細節記錄只在需要時開啟，正式環境不要洗版
 const DEBUG_TRANSLATION = process.env.DEBUG_TRANSLATION === "1";
 
+/*
+  max_completion_tokens 計算的是「推理 token + 可見輸出」的總和。
+
+  實際 log 顯示：11 個字的訊息 out=538，其中約 500 個是推理；
+  遇到較長或較雜的訊息時會把 1000 個 token 全部用在推理上，
+  content 變成空字串 → 被判定為輸出不合格 → 再花一次 fallback 的錢。
+  等於一次翻譯付了兩次費用，延遲也翻倍。
+
+  兩個對策：關掉推理，並把上限拉高當保險。
+*/
+const OPENAI_MAX_COMPLETION_TOKENS = Number(
+  process.env.OPENAI_MAX_COMPLETION_TOKENS || 2000
+);
+
+// 翻譯是照規則轉換，不需要模型自己想。設為 none 可省下大量輸出 token。
+// 設成空字串就不送這個參數。
+const OPENAI_REASONING_EFFORT =
+  process.env.OPENAI_REASONING_EFFORT ?? "none";
+
 /* ===================== 語音訊息翻譯 ===================== */
 
 /*
@@ -1869,6 +1888,7 @@ const tokenStats = {
   cachedTokens: 0,
   cacheWriteTokens: 0,
   completionTokens: 0,
+  reasoningTokens: 0,
   byModel: {}
 };
 
@@ -1886,8 +1906,11 @@ function recordTokenUsage(usage, modelName, targetLang) {
     usage.prompt_tokens_details?.cache_write_tokens ??
     usage.cache_write_tokens ??
     0;
+  // 推理 token 是隱形成本：計入 completion 卻不會出現在譯文裡
+  const reasoning = usage.completion_tokens_details?.reasoning_tokens ?? 0;
 
   tokenStats.calls++;
+  tokenStats.reasoningTokens += reasoning;
   tokenStats.promptTokens += prompt;
   tokenStats.completionTokens += completion;
   tokenStats.cachedTokens += cached;
@@ -1903,7 +1926,7 @@ function recordTokenUsage(usage, modelName, targetLang) {
 
   // 一行摘要，方便直接在 Render log 上看趨勢
   console.log(
-    `💰 tokens ${modelName} → ${targetLang} | prompt=${prompt} cached=${cached} write=${cacheWrite} out=${completion}`
+    `💰 tokens ${modelName} → ${targetLang} | prompt=${prompt} cached=${cached} write=${cacheWrite} out=${completion}${reasoning ? ` (推理 ${reasoning})` : ""}`
   );
 }
 
@@ -1946,7 +1969,15 @@ async function translateWithChatGPT(
   "https://api.openai.com/v1/chat/completions",
   {
     model: modelName,
-    max_completion_tokens: 1000,
+    max_completion_tokens: OPENAI_MAX_COMPLETION_TOKENS,
+    /*
+      只有推理模型吃 reasoning_effort。
+      gpt-4.1-mini 這類非推理模型收到會直接回 400，
+      整個 fallback 就掛掉，所以要依模型名稱判斷。
+    */
+    ...(OPENAI_REASONING_EFFORT && !/^gpt-4/.test(modelName)
+      ? { reasoning_effort: OPENAI_REASONING_EFFORT }
+      : {}),
     messages: [
       {
         role: "system",
@@ -1970,6 +2001,24 @@ async function translateWithChatGPT(
 
     let out =
       res.data?.choices?.[0]?.message?.content?.trim() || "";
+
+    /*
+      空輸出幾乎都是 max_completion_tokens 被推理耗盡（finish_reason=length）。
+      不記下來的話只會看到「輸出不合格」，查不出真正原因。
+    */
+    if (!out) {
+      const finishReason = res.data?.choices?.[0]?.finish_reason;
+      console.warn("⚠️ 模型回傳空內容：", {
+        model: modelName,
+        targetLang,
+        finishReason,
+        completionTokens: res.data?.usage?.completion_tokens,
+        reasoningTokens: res.data?.usage?.completion_tokens_details?.reasoning_tokens,
+        hint: finishReason === "length"
+          ? "輸出上限被用完，調高 OPENAI_MAX_COMPLETION_TOKENS 或降低 reasoning_effort"
+          : undefined
+      });
+    }
 
     out = out
       .split("\n")
@@ -3073,6 +3122,10 @@ adminRouter.get("/token-usage", (req, res) => {
     completionTokens,
     cachedTokens,
     cacheWriteTokens,
+    reasoningTokens: tokenStats.reasoningTokens,
+    reasoningRatio: completionTokens > 0
+      ? Number((tokenStats.reasoningTokens / completionTokens).toFixed(2))
+      : null,
     uncachedPrompt,
     readWriteRatio,
     relativeInputCost,
