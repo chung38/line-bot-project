@@ -595,7 +595,18 @@ function detectLang(text) {
 
   const chineseLen = (cleaned.match(/[\u4e00-\u9fff]/g) || []).length;
   const thaiLen = (cleaned.match(/[\u0E00-\u0E7F]/g) || []).length;
-  const viCharLen = (cleaned.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+  /*
+    越南文特徵字元。
+
+    原本只涵蓋 U+0102–01B0（Ă ă … Ư ư）與 U+1EA0–1EF9（帶聲調），
+    漏掉了 Latin-1 區的 â ê ô á à é è í ì ó ò ú ù ý ——
+    結果「Vâng ạ」只算到 1 個特徵字，達不到門檻而被判成英文，
+    越南文原文又被翻成越南文一次（「Ok ạ」甚至被改寫成「Được ạ」）。
+
+    這組語言裡（中／泰／越／印尼／英）只有越南文使用變音符號，
+    印尼文和英文都不用，所以出現變音符號就是很強的證據。
+  */
+  const viCharLen = (cleaned.match(/[\u00C0-\u00FF\u0100-\u01B0\u1EA0-\u1EF9]/g) || []).length;
   const latinLen = (cleaned.match(/[a-zA-Z]/g) || []).length;
 
   const chineseRatio = chineseLen / totalLen;
@@ -618,6 +629,8 @@ function detectLang(text) {
 
   if (
     viCharLen >= 2 ||
+    // 沒有中文夾雜時，單一個變音符號就足以判定（「Ok ạ」只有一個 ạ）
+    (viCharLen >= 1 && chineseLen === 0) ||
     viStrongHits >= 1 ||
     viWeakHits >= 2
   ) {
@@ -1600,22 +1613,29 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
     措辭又是「可以原樣保留」——是允許而非規定，
     結果同一則加班名單，越南文保留漢字、印尼文轉成拼音，兩種做法。
 
-    最大的陷阱是漢越音：越南文有自己的漢字讀音系統，
-    「阿凱」照漢越音會變成 A Khải、「宜丸」變成 Nghi Hoàn，
-    跟工廠現場實際喊的華語發音完全對不上，工人反而認不出自己。
-    所以規則必須綁定「華語發音」，只是改用目標語言的文字書寫。
+    轉寫方式分兩派，這裡刻意依語言而不同：
+
+    - 越南文用漢越音（Hán-Việt）。實測 Luna 本來就會這樣輸出
+      （林勇助 → Lâm Dũng Trợ、李明通 → Lý Minh Thông），
+      而且漢越音是「一個漢字固定對一個音節」的標準對照，
+      李永遠是 Lý、明永遠是 Minh，天生穩定。
+      加班名單靠名字認人，拼法飄動比念不準更危險，
+      所以穩定性優先，也符合越南處理中文姓名的慣例。
+
+    - 泰文、印尼文、英文沒有這種漢字讀音系統，
+      只能依華語發音用該語言的文字轉寫。
   */
   // 公司名／廠區名的音譯範例。必須跟人名一樣分語言，
   // 否則泰文句子裡會夾著「Zhuang Xi」這種泰籍員工念不出來的拉丁拼寫。
   const orgExamples = {
-    vi: "米多力 → Mi Đô Lì、庒西 → Choang Xi",
+    vi: "米多力 → Mễ Đa Lực、庒西 → Trang Tây、褒忠 → Bảo Trung",
     id: "米多力 → Mi Duo Li、庒西 → Cuang Si",
     th: "米多力 → หมี่ ตัว ลี่、庒西 → จวง ซี",
     en: "米多力 → Mi Duo Li、庒西 → Zhuang Xi"
   };
 
   const nameExamples = {
-    vi: "阿安 → A An、阿凱 → A Khai、阿力 → A Li、宜丸 → Yi Oan",
+    vi: "林勇助 → Lâm Dũng Trợ、李明通 → Lý Minh Thông、阿凱 → A Khải、宜丸 → Nghi Hoàn",
     id: "阿安 → A An、阿凱 → A Khai、阿力 → A Li、宜丸 → I Wan",
     th: "阿安 → อา อาน、阿凱 → อา ไค、阿力 → อา ลี่、宜丸 → อี้ หวาน",
     en: "阿安 → A An、阿凱 → A Kai、阿力 → A Li、宜丸 → Yi Wan"
@@ -1633,10 +1653,16 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 
 【人名】
 - 所有人名、暱稱、綽號一律轉寫，不得保留中文字。
-- 轉寫依據是「這個名字的華語發音」，用「${langLabel}」自己的文字與拼寫習慣書寫，
+${
+  targetLang === "vi"
+    ? `- 使用越南傳統的漢越音（Hán-Việt）讀法，一個漢字對應一個音節。
+  每個音節首字母大寫、音節之間空一格，並保留越南文的聲調符號。
+  同一個漢字必須永遠對應同一個音節（李一律是 Lý、明一律是 Minh），
+  這樣同一個人名在不同訊息中的寫法才會完全一致。`
+    : `- 轉寫依據是「這個名字的華語發音」，用「${langLabel}」自己的文字與拼寫習慣書寫，
   讓${langLabel}母語者照著念出來會接近原本的華語發音。
-- 嚴禁使用該語言傳統的漢字讀音系統。
-  例如越南文不可使用漢越音：「阿凱」不是「A Khải」，「宜丸」不是「Nghi Hoàn」。
+- 「${langLabel}」沒有漢字讀音系統，不可套用其他語言的漢字讀法。`
+}
 - 不要把名字意譯，也不要改用該語言的常見人名代替。
 - 參考寫法：${nameExamples[targetLang] || nameExamples.en}
 - 同一則訊息中，同一個人名的寫法必須完全一致。
@@ -1645,11 +1671,9 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
 - 也一律不得保留中文字，依下列優先順序處理：
   1. 該名稱若有廣為使用的官方外文名稱，直接使用該名稱。
      例如「嘉里大榮」的官方名稱是「Kerry TJ」，就用 Kerry TJ。
-  2. 沒有官方外文名稱時，比照上面【人名】的規則，
-     依華語發音用「${langLabel}」的文字轉寫。
+  2. 沒有官方外文名稱時，比照上面【人名】的轉寫方式處理。
      例如：${orgExamples[targetLang] || orgExamples.en}
 - 不確定是否有官方名稱時，一律選擇第 2 種（音譯），不要自行創造英文名稱。
-- 嚴禁使用漢越音等傳統漢字讀音來轉寫公司名。
 - 同一則訊息中，同一個名稱的寫法必須完全一致。
 `.trim();
 
@@ -2154,7 +2178,8 @@ ${buildTranslationPrompt(targetLang, industry, true)}
 - 每個人名與暱稱都依「華語發音」轉寫，
   用「${targetLanguageName}」自己的文字與拼寫習慣書寫，
   讓該語言的母語者念出來會接近原本的華語發音。
-- 嚴禁使用該語言傳統的漢字讀音（越南文不可用漢越音：「阿凱」不是「A Khải」）。
+- 越南文請使用漢越音（Hán-Việt）讀法，例如 林勇助 → Lâm Dũng Trợ。
+- 泰文、印尼文、英文沒有漢字讀音系統，依華語發音用該語言的文字轉寫。
 - 不要把名字意譯，也不要換成該語言的常見人名。
 - 人名中不可殘留任何中文字。
 - 其餘內容維持不變。只輸出翻譯結果。
