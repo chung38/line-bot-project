@@ -93,6 +93,19 @@ const TRANSLATION_TOTAL_TIMEOUT_MS = Number(process.env.TRANSLATION_TIMEOUT_MS |
 const DEBUG_TRANSLATION = process.env.DEBUG_TRANSLATION === "1";
 
 /*
+  機器人被加入群組時的行為。
+
+    menu   ：直接跳出語言選單（原本的行為）
+    hint   ：只回一句話告知怎麼設定，不跳選單（預設）
+    silent ：完全不回應
+
+  改成 hint 是因為完全不回應的話，邀請者不會知道要輸入 !設定，
+  機器人看起來就像壞掉的。silent 適合由你們自己在後台完成設定、
+  不希望機器人在客戶群組裡發言的情況。
+*/
+const JOIN_MESSAGE_MODE = process.env.JOIN_MESSAGE_MODE || "hint";
+
+/*
   max_completion_tokens 計算的是「推理 token + 可見輸出」的總和。
 
   實際 log 顯示：11 個字的訊息 out=538，其中約 500 個是推理；
@@ -420,7 +433,10 @@ const i18n = {
     groupBlocked:
       "⚠️ 此群組先前已停用翻譯服務，目前無法使用。\n" +
       "若需重新啟用，請聯繫管理員解除後再試。",
-    voiceTooLong: "⚠️ 語音訊息超過 {sec} 秒，未進行翻譯。請分段錄製。"
+    voiceTooLong: "⚠️ 語音訊息超過 {sec} 秒，未進行翻譯。請分段錄製。",
+    joinHint:
+      "👋 翻譯機器人已加入。\n" +
+      "請由邀請我進群的人輸入「!設定」來選擇要翻譯的語言。"
   }
 };
 
@@ -3735,7 +3751,13 @@ async function handleEvent(event) {
       return null;
     }
 
-    await sendMenu(gid);
+    if (JOIN_MESSAGE_MODE === "menu") {
+      await sendMenu(gid);
+    } else if (JOIN_MESSAGE_MODE === "hint") {
+      await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].joinHint);
+    }
+    // silent：不做任何事
+
     return null;
   }
 
