@@ -119,12 +119,20 @@ function getFilteredGroups() {
     const quotaState = item.usage?.quotaState || "";
     const matchUsage = !usageFilter || quotaState === usageFilter;
 
+    const setupFilter = document.getElementById("setupFilter")?.value || "";
+    const matchSetup =
+      !setupFilter ||
+      (setupFilter === "__PENDING__"
+        ? item.setupState !== "READY"
+        : item.setupState === setupFilter);
+
     return (
       matchKeyword &&
       matchLang &&
       matchIndustry &&
       matchSubscription &&
-      matchUsage
+      matchUsage &&
+      matchSetup
     );
   });
 }
@@ -137,6 +145,34 @@ function toggleGroupSelection(gid, checked) {
   if (checked) selectedGids.add(gid);
   else selectedGids.delete(gid);
   updateSelectedSummary(getFilteredGroups());
+}
+
+/*
+  setupState 由後端提供，用來看出群組卡在設定的哪一步：
+    JOINED      機器人已加入，但還沒有人操作過設定
+    NO_LANGUAGE 有人開始設定卻沒選語言 —— 這種最危險，
+                群組看起來已設定好，實際上完全不會翻譯
+    READY       正常運作中
+*/
+const SETUP_STATE_LABEL = {
+  JOINED:      { text: "未設定",   cls: "setup-joined" },
+  NO_LANGUAGE: { text: "缺語言",   cls: "setup-nolang" },
+  READY:       { text: "運作中",   cls: "setup-ready" }
+};
+
+function setupBadge(item) {
+  const s = SETUP_STATE_LABEL[item.setupState];
+  if (!s) return "";
+  return `<span class="setup-badge ${s.cls}">${s.text}</span>`;
+}
+
+function formatJoinedAt(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  const date = d.toLocaleDateString("zh-TW");
+  return days > 0 ? `${date}（${days} 天前）` : date;
 }
 
 function renderGroups() {
@@ -156,13 +192,19 @@ function renderGroups() {
               <span>選取此群組</span>
             </label>
 
-            <div class="group-title">${escapeHtml(item.groupName || item.gid)}</div>
+            <div class="group-title">${escapeHtml(item.groupName || item.gid)} ${setupBadge(item)}</div>
             <div class="group-id">群組ID：${escapeHtml(item.gid)}</div>
           </div>
           <div class="group-actions">
             <button onclick="editGroup('${escapeHtml(item.gid)}')">編輯</button>
           </div>
         </div>
+
+        ${item.setupState !== "READY" && formatJoinedAt(item.joinedAt) ? `
+        <div class="group-row">
+          <span class="label">加入時間</span>
+          <div>${escapeHtml(formatJoinedAt(item.joinedAt))}</div>
+        </div>` : ""}
 
         <div class="group-row">
           <span class="label">群組人數</span>
