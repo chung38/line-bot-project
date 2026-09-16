@@ -581,16 +581,31 @@ function isOutputValidForLang(out = "", targetLang = "") {
   if (targetLang === "id") {
     if (latinLen === 0 || isChineseDominant) return false;
     if (thaiLen > 0) return false;
-    if (viDiacritics >= 1) return false;                 // 印尼文不會有越南文聲調字元
-    if (idHits >= 1) return true;                        // 確定是印尼文
-    if (englishHitsForId >= 2) return false;             // 明顯是英文
+
+    /*
+      正面證據必須先判定。
+
+      原本「有越南文聲調字元就否決」排在印尼文證據之前，
+      導致譯文只要保留一個越南文專有名詞就整段被擋 ——
+      例如原文提到 Tết（越南新年），印尼文譯文必然會保留這個詞，
+      結果正確的翻譯連同 fallback 一起被判失敗，群組收到「翻譯異常」。
+
+      保留來源語言的專有名詞是 prompt 允許、也是正確的行為，
+      所以先確認有沒有印尼文特徵詞；有就直接通過。
+      門檻也從 1 個聲調字元提高到 2 個，容得下單一個外來專有名詞。
+    */
+    if (idHits >= 1) return true;
+    if (viDiacritics >= 2) return false;
+    if (englishHitsForId >= 2) return false;
     return true;
   }
 
   if (targetLang === "en") {
     if (latinLen === 0 || isChineseDominant) return false;
     if (thaiLen > 0) return false;
-    if (viDiacritics >= 2) return false;
+    // 同樣讓正面證據優先，避免保留越南文人名時被誤擋
+    if (englishHits >= 2) return true;
+    if (viDiacritics >= 3) return false;
     return true;
   }
 
@@ -1660,9 +1675,13 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
   const personNameRule =
     targetLang === "zh-TW"
       ? `
-人名規則：
-- 目標語言是繁體中文，人名以中文書寫即可。
-- 原文若是拼音或外文姓名（例如 Nguyen Van A、Somchai），保留原樣，不要音譯成漢字。
+專有名詞規則：
+- 目標語言是繁體中文，中文人名與專有名詞以中文書寫即可。
+- 外文姓名（例如 Nguyen Van A、Somchai）保留拉丁字母，不要音譯成漢字，
+  那樣會對不上工證、薪資單與打卡系統上的拼法。
+- 但要去掉越南文的聲調符號，改用一般拉丁字母，
+  例如：Nguyễn Đức Mạnh → Nguyen Duc Manh。
+- 節日與文化名詞要意譯，不可照抄，例如：Tết → 越南新年。
 `.trim()
       : `
 名稱規則（務必嚴格遵守）：
@@ -1690,6 +1709,27 @@ ${
   2. 沒有官方外文名稱時，比照上面【人名】的轉寫方式處理。
      例如：${orgExamples[targetLang] || orgExamples.en}
 - 不確定是否有官方名稱時，一律選擇第 2 種（音譯），不要自行創造英文名稱。
+
+【原文不是中文時】
+- 原文中的外文專有名詞（越南文、泰文、印尼文的人名、地名、節日名等）
+  同樣不可原樣照抄，一律改用「${langLabel}」的書寫方式呈現。
+${
+  targetLang === "th"
+    ? `- 用泰文字母轉寫，例如：Nguyễn Đức Mạnh → เหงียน ดึ๊ก หมั่ญ`
+    : targetLang === "vi"
+    ? `- 越南文的人名、地名、節日名維持越南文原樣，包含聲調符號，不要改寫。`
+    : `- 越南文姓名請去掉聲調符號，改用一般拉丁字母，
+  例如：Nguyễn Đức Mạnh → Nguyen Duc Manh。
+- 不要把外文姓名音譯成漢字（不要寫成「阮德孟」），
+  那樣對不上工證、薪資單與打卡系統上的拼法。`
+}
+- 節日與文化名詞若有對應說法，要意譯而不是照抄，
+  例如：Tết → ${
+    targetLang === "id" ? "Tahun Baru Vietnam"
+    : targetLang === "th" ? "เทศกาลเต็ด (ปีใหม่เวียดนาม)"
+    : targetLang === "vi" ? "Tết（維持原樣）"
+    : "Vietnamese New Year"
+  }。
 - 同一則訊息中，同一個名稱的寫法必須完全一致。
 `.trim();
 
