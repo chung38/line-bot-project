@@ -3813,7 +3813,14 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        /*
+          非授權者按按鈕時保持靜默。
+
+          先前會回「你沒有權限操作此群組設定」，但選單是全群組看得到的，
+          好奇按一下的人不少，訊息就一直在群組裡洗版。
+          按了沒反應本身就足以表達「這不是給你用的」。
+        */
+        console.log("🔒 非授權者操作，已略過：", { gid, uid });
         return null;
       }
 
@@ -3854,7 +3861,14 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        /*
+          非授權者按按鈕時保持靜默。
+
+          先前會回「你沒有權限操作此群組設定」，但選單是全群組看得到的，
+          好奇按一下的人不少，訊息就一直在群組裡洗版。
+          按了沒反應本身就足以表達「這不是給你用的」。
+        */
+        console.log("🔒 非授權者操作，已略過：", { gid, uid });
         return null;
       }
 
@@ -3871,7 +3885,14 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        /*
+          非授權者按按鈕時保持靜默。
+
+          先前會回「你沒有權限操作此群組設定」，但選單是全群組看得到的，
+          好奇按一下的人不少，訊息就一直在群組裡洗版。
+          按了沒反應本身就足以表達「這不是給你用的」。
+        */
+        console.log("🔒 非授權者操作，已略過：", { gid, uid });
         return null;
       }
 
@@ -3931,7 +3952,14 @@ async function handleEvent(event) {
       }
 
       if (!isAuthorizedOperator(gid, uid)) {
-        await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].noPermission);
+        /*
+          非授權者按按鈕時保持靜默。
+
+          先前會回「你沒有權限操作此群組設定」，但選單是全群組看得到的，
+          好奇按一下的人不少，訊息就一直在群組裡洗版。
+          按了沒反應本身就足以表達「這不是給你用的」。
+        */
+        console.log("🔒 非授權者操作，已略過：", { gid, uid });
         return null;
       }
 
