@@ -148,3 +148,22 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0}
   .stats-grid{grid-template-columns:repeat(2,1fr)}
 }
 @media(max-width:600px){.page{padding:12px}.topbar{padding:0 14px}.card-grid{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.tab-btn{padding:6px 10px;font-size:12px}}
+
+/* === 群組設定狀態標章 === */
+.setup-badge{
+  display:inline-block;
+  margin-left:8px;
+  padding:2px 8px;
+  border-radius:10px;
+  font-size:12px;
+  font-weight:600;
+  line-height:1.6;
+  vertical-align:middle;
+  white-space:nowrap;
+}
+/* 已加入但沒人操作過設定 */
+.setup-badge.setup-joined{ background:#fff4e5; color:#b26a00; border:1px solid #ffd9a0; }
+/* 有人設定過卻沒選語言 —— 看起來正常但實際不會翻譯，用最醒目的紅色 */
+.setup-badge.setup-nolang{ background:#ffeaea; color:#c62828; border:1px solid #ffc2c2; }
+/* 正常運作 */
+.setup-badge.setup-ready{ background:#e8f5e9; color:#2e7d32; border:1px solid #bfe3c2; }
