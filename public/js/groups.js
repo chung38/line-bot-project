@@ -180,7 +180,7 @@ function renderGroups() {
 
   const html = filtered.length
     ? filtered.map(item => `
-      <div class="group-card">
+      <div class="group-card" data-setup="${escapeHtml(item.setupState || "")}">
         <div class="group-card-head">
           <div>
             <label class="checkbox-item" style="display:inline-flex; margin-bottom:10px;">
