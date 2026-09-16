@@ -1268,11 +1268,56 @@ async function markPaymentFailed(userId) {
 }
 
 
+/*
+  已加入但尚未完成設定的群組。
+
+  sendMenu 不寫入任何資料，真正把群組登記進來的是 ensureInviterIfMissing，
+  而那要等到有人按下語言按鈕或輸入 !設定 才會觸發。
+  所以客戶把機器人加進群組卻沒人去設定時，後台完全看不到這個群組存在，
+  也就無從得知該去追蹤。這裡在 join 當下就記一筆。
+*/
+const joinedGroups = new Map(); // gid -> { groupName, joinedAt }
+
+async function loadJoinedGroups() {
+  const snapshot = await db.collection("joinedGroups").get();
+  snapshot.forEach(doc => joinedGroups.set(doc.id, doc.data()));
+  console.log(`✅ 已載入 ${joinedGroups.size} 筆入群紀錄`);
+}
+
+async function recordGroupJoin(gid) {
+  if (!gid) return;
+
+  /*
+    群組名稱要趁現在抓 —— 機器人此刻確定還在群組裡。
+    抓不到不影響記錄，後台顯示 gid 即可。
+  */
+  let groupName = null;
+  try {
+    const summary = await getGroupSummaryCached(gid);
+    groupName = summary?.groupName || null;
+  } catch {
+    // 忽略
+  }
+
+  const payload = { groupName, joinedAt: new Date().toISOString() };
+  joinedGroups.set(gid, payload);
+
+  try {
+    await db.collection("joinedGroups").doc(gid).set(
+      { ...payload, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+  } catch (e) {
+    console.error("記錄入群失敗:", gid, e.message);
+  }
+}
+
 function getAllKnownGroupIds() {
   return [...new Set([
     ...groupLang.keys(),
     ...groupInviter.keys(),
-    ...groupIndustry.keys()
+    ...groupIndustry.keys(),
+    ...joinedGroups.keys()
   ])].sort();
 }
 
@@ -1608,7 +1653,11 @@ async function deleteGroupSettings(gid) {
   groupInviter.delete(gid);
   groupIndustry.delete(gid);
   groupSummaryCache.delete(gid);
+  joinedGroups.delete(gid);
   deletedGroups.add(gid);
+
+  db.collection("joinedGroups").doc(gid).delete()
+    .catch(e => console.error("清除入群紀錄失敗:", gid, e.message));
 }
 
 async function addAdminLog(action, detail, actor = "admin", extra = {}) {
@@ -3058,11 +3107,26 @@ adminRouter.get("/groups", async (req, res) => {
           ? Math.round((used / quota) * 100)
           : null;
 
+        const langs = [...(groupLang.get(gid) || new Set())];
+        const joinInfo = joinedGroups.get(gid) || null;
+
+        /*
+          setupState 讓後台一眼看出群組卡在哪一步：
+            JOINED      機器人已加入，但還沒有人操作過設定
+            NO_LANGUAGE 有人開始設定但沒選語言，翻譯不會運作
+            READY       正常運作中
+        */
+        const setupState = langs.length > 0
+          ? "READY"
+          : (inviter ? "NO_LANGUAGE" : "JOINED");
+
         return {
           gid,
-          groupName,
+          groupName: groupName || joinInfo?.groupName || null,
           memberCount,
-          langs: [...(groupLang.get(gid) || new Set())],
+          langs,
+          setupState,
+          joinedAt: joinInfo?.joinedAt || null,
           industry: groupIndustry.get(gid) || null,
           inviter,
           inviterName,
@@ -3791,6 +3855,9 @@ async function handleEvent(event) {
       return null;
     }
 
+    // 先登記，再決定要不要發訊息 —— 不論哪種模式都要留下紀錄
+    await recordGroupJoin(gid);
+
     if (JOIN_MESSAGE_MODE === "menu") {
       await sendMenu(gid);
     } else if (JOIN_MESSAGE_MODE === "hint") {
@@ -4023,6 +4090,7 @@ Promise.all([
   loadInviter(),
   loadIndustry(),
   loadIndustryMaster(),
+  loadJoinedGroups(),
   loadDeletedGroups()
 ]).then(() => {
   const PORT = process.env.PORT || 3000;
