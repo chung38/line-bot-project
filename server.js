@@ -525,9 +525,29 @@ function isOutputValidForLang(out = "", targetLang = "") {
     chineseLen >= 4 &&
     chineseRatio >= 0.45;
 
-  // 繁中：必須含中文
+  /*
+    繁中。
+
+    原本要求「輸出必須含中文」，但整則訊息只有一個外籍員工姓名時
+    （例如泰文的「อนุพงษ์」），照規則正確的輸出是羅馬拼音 Anuphong，
+    一個中文字都不會有 —— 正確翻譯反而拿不出檢查要求的證據，
+    連同 fallback 一起被判失敗，群組收到「繁中翻譯異常」。
+
+    所以改成只在有「照抄原文」的正面證據時才判失敗：
+      殘留泰文字元        → 沒翻
+      殘留越南文聲調字元  → 沒翻（繁中的姓名規則要求去掉聲調）
+      整段拉丁文字又很長  → 把整句原文羅馬拼音化，不是翻譯
+    短的純拉丁輸出視為姓名或代號，放行。
+  */
   if (targetLang === "zh-TW") {
-    return chineseLen > 0;
+    if (chineseLen > 0) return true;
+    if (thaiLen > 0) return false;
+
+    const viTone = (meaningful.match(/[\u0102-\u01B0\u1EA0-\u1EF9]/g) || []).length;
+    if (viTone > 0) return false;
+
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    return meaningful.length <= 24 && wordCount <= 3;
   }
 
   /*
@@ -1725,11 +1745,12 @@ function buildTranslationPrompt(targetLang, industry, forceStrict = false) {
     targetLang === "zh-TW"
       ? `
 專有名詞規則：
-- 目標語言是繁體中文，中文人名與專有名詞以中文書寫即可。
-- 外文姓名（例如 Nguyen Van A、Somchai）保留拉丁字母，不要音譯成漢字，
-  那樣會對不上工證、薪資單與打卡系統上的拼法。
-- 但要去掉越南文的聲調符號，改用一般拉丁字母，
-  例如：Nguyễn Đức Mạnh → Nguyen Duc Manh。
+- 目標語言是繁體中文，所有人名一律以中文漢字書寫。
+- 外文姓名（泰文、越南文、印尼文、英文）依其發音音譯成中文，不可保留原文拼寫。
+  例如：อนุพงษ์ → 阿努朋、ธนกร → 他那功、Nguyễn Đức Mạnh → 阮德孟、
+  Somchai → 頌猜、Budi → 布迪。
+- 音譯要選常見、好念的用字，同一則訊息中同一個人名的寫法必須一致。
+- 公司名、廠區名若有通用中文名稱就用該名稱，沒有才音譯。
 - 節日與文化名詞要意譯，不可照抄，例如：Tết → 越南新年。
 `.trim()
       : `
