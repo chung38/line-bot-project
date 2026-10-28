@@ -149,12 +149,15 @@ function toggleGroupSelection(gid, checked) {
 
 /*
   setupState 由後端提供，用來看出群組卡在設定的哪一步：
+    BLOCKED     在封鎖清單裡 —— 機器人雖然在群組內，但一句話都不會翻，
+                群組成員只會收到「此群組先前已停用翻譯服務」
     JOINED      機器人已加入，但還沒有人操作過設定
     NO_LANGUAGE 有人開始設定卻沒選語言 —— 這種最危險，
                 群組看起來已設定好，實際上完全不會翻譯
     READY       正常運作中
 */
 const SETUP_STATE_LABEL = {
+  BLOCKED:     { text: "已封鎖",   cls: "setup-blocked" },
   JOINED:      { text: "未設定",   cls: "setup-joined" },
   NO_LANGUAGE: { text: "缺語言",   cls: "setup-nolang" },
   READY:       { text: "運作中",   cls: "setup-ready" }
@@ -196,9 +199,17 @@ function renderGroups() {
             <div class="group-id">群組ID：${escapeHtml(item.gid)}</div>
           </div>
           <div class="group-actions">
+            ${item.blocked ? `
+            <button class="btn-unblock" onclick="restoreGroup('${escapeHtml(item.gid)}')">解除封鎖</button>` : ""}
             <button onclick="editGroup('${escapeHtml(item.gid)}')">編輯</button>
           </div>
         </div>
+
+        ${item.blocked ? `
+        <div class="group-alert">
+          此群組在封鎖清單中，成員發言不會被翻譯，只會收到「此群組先前已停用翻譯服務」。
+          解除封鎖後需重新設定語言。
+        </div>` : ""}
 
         ${item.setupState !== "READY" && formatJoinedAt(item.joinedAt) ? `
         <div class="group-row">
@@ -383,7 +394,8 @@ async function restoreGroup(gid) {
       method: "DELETE"
     });
     toast("✅ 已解除封鎖，群組可重新綁定");
-    await loadBlockedGroups();
+    // 封鎖中的群組現在也會出現在上方列表，兩邊都要重新載入
+    await Promise.all([loadGroups(), loadBlockedGroups()]);
   } catch (e) {
     toast(`恢復失敗：${e.message}`, true);
   }

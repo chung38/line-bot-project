@@ -106,6 +106,18 @@ const DEBUG_TRANSLATION = process.env.DEBUG_TRANSLATION === "1";
 const JOIN_MESSAGE_MODE = process.env.JOIN_MESSAGE_MODE || "hint";
 
 /*
+  機器人被移出群組時，要不要把這個群組永久列入封鎖清單。
+
+  預設 false。額度是算在邀請人的 userId 上，不是算在群組上，
+  所以「踢掉機器人再邀回來」不會重置任何額度，封鎖在這裡防不到濫用；
+  相反地，工廠群組改組或有人誤踢機器人時，客戶重邀後會直接被擋掉。
+  只有後台管理員手動刪除才會寫入封鎖清單。
+
+  要恢復「退群即永久封鎖」的舊行為：Render 環境變數設 LEAVE_BLOCKS_GROUP=true
+*/
+const LEAVE_BLOCKS_GROUP = process.env.LEAVE_BLOCKS_GROUP === "true";
+
+/*
   max_completion_tokens 計算的是「推理 token + 可見輸出」的總和。
 
   實際 log 顯示：11 個字的訊息 out=538，其中約 500 個是推理；
@@ -354,7 +366,9 @@ async function handleAudioMessage(event, gid, uid, replyToken) {
       uid,
       replyToken,
       message: { type: "text", text: transcript },
-      prefix: `🎤 ${transcript}\n\n`
+      prefix: `🎤 ${transcript}\n\n`,
+      // 語音訊息的 quoteToken 一樣可用，譯文會掛在原語音下方
+      quoteToken: event.message?.quoteToken || null
     });
   } catch (e) {
     console.error("語音處理失敗：", e.message);
@@ -1461,13 +1475,29 @@ async function safeReply(replyToken, text) {
     return false;
   }
 }
-async function safeReplyOrPush(replyToken, gid, text) {
+/*
+  quoteToken 讓回覆在群組裡直接掛在原訊息下方，顯示引用區塊。
+
+  它跟 replyToken 是兩回事：
+    replyToken 很短命、一次性，決定「用 reply 還是 push 送」
+    quoteToken 永不過期、可重複使用，決定「要不要顯示引用」
+
+  這個差異很關鍵。翻譯是背景跑的，主模型加 fallback 可能花掉數十秒，
+  replyToken 常常已經失效而改走 push —— 但 quoteToken 不受影響，
+  push 出去的訊息一樣看得到引用，視覺關聯不會斷掉。
+
+  限制：只有 text 與 sticker 訊息能帶 quoteToken，Flex 不支援。
+*/
+function buildTextMessage(text, quoteToken) {
+  const msg = { type: "text", text };
+  if (quoteToken) msg.quoteToken = quoteToken;
+  return msg;
+}
+
+async function safeReplyOrPush(replyToken, gid, text, quoteToken = null) {
   if (replyToken) {
     try {
-      await client.replyMessage(replyToken, {
-        type: "text",
-        text
-      });
+      await client.replyMessage(replyToken, buildTextMessage(text, quoteToken));
       return true;
     } catch (e) {
       console.error(
@@ -1483,10 +1513,7 @@ async function safeReplyOrPush(replyToken, gid, text) {
   }
 
   try {
-    await client.pushMessage(gid, {
-      type: "text",
-      text
-    });
+    await client.pushMessage(gid, buildTextMessage(text, quoteToken));
     return true;
   } catch (e) {
     console.error(
@@ -1531,10 +1558,11 @@ function splitTextForLine(text, limit = LINE_TEXT_LIMIT) {
   return chunks;
 }
 
-async function sendLongText(replyToken, gid, text) {
+async function sendLongText(replyToken, gid, text, quoteToken = null) {
   const chunks = splitTextForLine(text);
 
-  const ok = await safeReplyOrPush(replyToken, gid, chunks[0]);
+  // 只有第一則帶引用；每一則都掛一個相同的引用區塊會很吵
+  const ok = await safeReplyOrPush(replyToken, gid, chunks[0], quoteToken);
 
   for (let i = 1; i < chunks.length; i++) {
     if (!gid) break;
@@ -1642,7 +1670,20 @@ async function saveIndustryForGroup(gid) {
 }
 
 // ✅ Step 3 (deleteGroupSettings): 退群時寫入 deletedGroups
-async function deleteGroupSettings(gid) {
+/*
+  清除群組設定。
+
+  blocklist = true  → 同時寫入永久封鎖清單（後台手動刪除用）
+  blocklist = false → 只清設定，之後重新邀入可以照常重新設定（退群用）
+
+  為什麼退群預設不封鎖：
+  額度是記在「邀請人的 userId」(usageMonthly/{userId}_{monthKey})，
+  不是記在群組上；maxGroups 也是算邀請人名下的群組數。
+  所以「踢掉機器人再邀回來」並不會重置任何額度 —— 封鎖清單在這裡
+  防不到任何濫用，只會在工廠群組改組、有人誤踢機器人時，
+  讓客戶重邀後收到「此群組先前已停用翻譯服務」而完全無法使用。
+*/
+async function deleteGroupSettings(gid, { blocklist = true, reason = "" } = {}) {
   /*
     群組名稱必須在「bot 還在群組裡」的此刻就記下來。
     一旦退群，就無法再向 LINE API 查詢群組資訊，
@@ -1653,31 +1694,46 @@ async function deleteGroupSettings(gid) {
     const summary = await getGroupSummaryCached(gid);
     groupName = summary?.groupName || null;
   } catch {
-    // 已退群或 API 失敗都不該影響封鎖流程，名稱留空即可
+    // 已退群或 API 失敗都不該影響流程，名稱留空即可
   }
+  if (!groupName) groupName = joinedGroups.get(gid)?.groupName || null;
 
   const inviterUserId = groupInviter.get(gid) || null;
 
-  await Promise.allSettled([
+  const writes = [
     db.collection("groupLanguages").doc(gid).delete(),
     db.collection("groupInviters").doc(gid).delete(),
-    db.collection("groupIndustries").doc(gid).delete(),
-    // 寫入封鎖清單，防止重新自動建立
-    db.collection("deletedGroups").doc(gid).set({
-      groupName,
-      inviterUserId,
-      deletedAt: admin.firestore.FieldValue.serverTimestamp()
-    })
-  ]);
+    db.collection("groupIndustries").doc(gid).delete()
+  ];
+
+  if (blocklist) {
+    writes.push(
+      db.collection("deletedGroups").doc(gid).set({
+        groupName,
+        inviterUserId,
+        reason: reason || null,
+        deletedAt: admin.firestore.FieldValue.serverTimestamp()
+      })
+    );
+  }
+
+  await Promise.allSettled(writes);
+
   groupLang.delete(gid);
   groupInviter.delete(gid);
   groupIndustry.delete(gid);
   groupSummaryCache.delete(gid);
-  joinedGroups.delete(gid);
-  deletedGroups.add(gid);
 
-  db.collection("joinedGroups").doc(gid).delete()
-    .catch(e => console.error("清除入群紀錄失敗:", gid, e.message));
+  if (blocklist) {
+    deletedGroups.add(gid);
+    joinedGroups.delete(gid);
+    db.collection("joinedGroups").doc(gid).delete()
+      .catch(e => console.error("清除入群紀錄失敗:", gid, e.message));
+  }
+  /*
+    沒封鎖的情況保留 joinedGroups —— 後台還看得到這個群存在過，
+    狀態會顯示「未設定」，重邀後也不必重新登記。
+  */
 }
 
 async function addAdminLog(action, detail, actor = "admin", extra = {}) {
@@ -2486,7 +2542,7 @@ if (DEBUG_TRANSLATION) {
 return restored;
 }
 
-async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, ownerUserId, hasOfficialMentionData = false, prefix = "") {
+async function processTranslationInBackground(replyToken, gid, uid, masked, segments, rawLines, langSet, sourceLang, ownerUserId, hasOfficialMentionData = false, prefix = "", quoteToken = null) {
   const allNeededLangs = new Set();
   const langOutputs = {};
 
@@ -2634,7 +2690,7 @@ const shouldSkipSourceLanguage =
   // 這裡原本用 safeReply（明確不 push）。但翻譯是背景進行的，
   // 主模型 25 秒 + fallback 25 秒之後 replyToken 很可能已失效，
   // 一旦 reply 失敗整則翻譯就無聲消失，額度卻照扣。改用 reply 失敗自動轉 push。
-  await sendLongText(replyToken, gid, fullText);
+  await sendLongText(replyToken, gid, fullText, quoteToken);
 
   // 成本與目標語言數成正比，額度不應該固定只扣 1
   await incrementMonthlyUsage(ownerUserId, targetLangs.length, masked.length);
@@ -3133,13 +3189,20 @@ adminRouter.get("/groups", async (req, res) => {
 
         /*
           setupState 讓後台一眼看出群組卡在哪一步：
+            BLOCKED     在封鎖清單裡，成員發言完全不會被翻譯
             JOINED      機器人已加入，但還沒有人操作過設定
             NO_LANGUAGE 有人開始設定但沒選語言，翻譯不會運作
             READY       正常運作中
+
+          BLOCKED 必須排在最前面判斷。被封鎖的群組就算還留著語言設定，
+          實際上一句話都不會翻 —— 顯示「運作中」會害管理員判斷錯誤。
         */
-        const setupState = langs.length > 0
-          ? "READY"
-          : (inviter ? "NO_LANGUAGE" : "JOINED");
+        const isBlocked = deletedGroups.has(gid);
+        const setupState = isBlocked
+          ? "BLOCKED"
+          : (langs.length > 0
+              ? "READY"
+              : (inviter ? "NO_LANGUAGE" : "JOINED"));
 
         return {
           gid,
@@ -3147,6 +3210,7 @@ adminRouter.get("/groups", async (req, res) => {
           memberCount,
           langs,
           setupState,
+          blocked: isBlocked,
           joinedAt: joinInfo?.joinedAt || null,
           industry: groupIndustry.get(gid) || null,
           inviter,
@@ -3251,9 +3315,26 @@ adminRouter.put("/groups/:gid/settings", async (req, res) => {
 adminRouter.delete("/groups/:gid/settings", async (req, res) => {
   try {
     const { gid } = req.params;
-    await deleteGroupSettings(gid);
-    await addAdminLog("DELETE_GROUP_SETTINGS", `刪除群組 ${gid} 設定`, req.auth.user, { gid });
-    res.json({ success: true, gid });
+
+    /*
+      預設維持原行為：後台手動刪除 = 永久封鎖。
+      只清設定不封鎖請帶 ?blocklist=false（客戶要重新設定語言時用，
+      不必再跑一次解除封鎖）。
+    */
+    const blocklist = req.query.blocklist !== "false";
+
+    await deleteGroupSettings(gid, {
+      blocklist,
+      reason: `後台由 ${req.auth.user} 刪除`
+    });
+
+    await addAdminLog(
+      "DELETE_GROUP_SETTINGS",
+      `刪除群組 ${gid} 設定${blocklist ? "（並封鎖）" : "（未封鎖）"}`,
+      req.auth.user,
+      { gid, blocklist }
+    );
+    res.json({ success: true, gid, blocked: blocklist });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -3797,7 +3878,7 @@ app.post(
   message 可以是真的 LINE 文字訊息，也可以是語音轉錄後合成的
   { type: "text", text: 轉錄結果 }。
 */
-async function dispatchTranslation({ gid, uid, replyToken, message, prefix = "" }) {
+async function dispatchTranslation({ gid, uid, replyToken, message, prefix = "", quoteToken = null }) {
   const langSet = groupLang.get(gid);
   if (!langSet || langSet.size === 0) return null;
 
@@ -3847,7 +3928,7 @@ async function dispatchTranslation({ gid, uid, replyToken, message, prefix = "" 
 
   processTranslationInBackground(
     replyToken, gid, uid, masked, segments, rawLines,
-    langSet, sourceLang, useResult.inviterUserId, hasOfficialMentionData, prefix
+    langSet, sourceLang, useResult.inviterUserId, hasOfficialMentionData, prefix, quoteToken
   ).catch(e => console.error("背景翻譯失敗:", e));
 
   return null;
@@ -3859,11 +3940,37 @@ async function handleEvent(event) {
   const replyToken = event.replyToken || null;
 
   if (event.type === "leave" && gid) {
-    await deleteGroupSettings(gid);
+    /*
+      退群只清設定，預設不寫入永久封鎖清單。
+      要恢復舊行為（退群即永久封鎖）在 Render 設 LEAVE_BLOCKS_GROUP=true。
+    */
+    await deleteGroupSettings(gid, {
+      blocklist: LEAVE_BLOCKS_GROUP,
+      reason: "bot 被移出群組"
+    });
+    console.log(
+      LEAVE_BLOCKS_GROUP ? "🚫 退群並封鎖：" : "👋 退群，已清除設定（未封鎖）：",
+      gid
+    );
     return null;
   }
 
   if (event.type === "join" && gid) {
+    /*
+      登記一定要在封鎖檢查之前。
+
+      原本的順序是「先檢查封鎖、被封鎖就 return」，結果是：
+      被封鎖的群組永遠不會進 joinedGroups，也就不會出現在
+      getAllKnownGroupIds()，後台群組列表完全搜不到這個群，
+      管理員收到客戶抱怨時找不到群組可以解除封鎖 —— 偏偏這正是
+      最需要在後台看到它的時候。
+
+      趁現在登記還有一個好處：機器人此刻確定在群組裡，
+      recordGroupJoin 抓得到群組名稱，後台才搜得到名字
+      （舊的封鎖紀錄沒有群組名，只能靠 deletedAt 認人）。
+    */
+    await recordGroupJoin(gid);
+
     /*
       封鎖檢查要在 sendMenu 之前。
       否則選單照常送出、但使用者按下任何按鈕都會被
@@ -3871,13 +3978,10 @@ async function handleEvent(event) {
       而不是知道這個群組已被停用。
     */
     if (deletedGroups.has(gid)) {
-      console.log("🚫 已封鎖的群組嘗試重新加入：", gid);
+      console.log("🚫 已封鎖的群組嘗試重新加入：", gid, joinedGroups.get(gid)?.groupName || "(名稱不詳)");
       await safeReplyOrPush(replyToken, gid, i18n["zh-TW"].groupBlocked);
       return null;
     }
-
-    // 先登記，再決定要不要發訊息 —— 不論哪種模式都要留下紀錄
-    await recordGroupJoin(gid);
 
     if (JOIN_MESSAGE_MODE === "menu") {
       await sendMenu(gid);
@@ -4078,7 +4182,12 @@ async function handleEvent(event) {
 
     if (rawText.trim().startsWith("!")) return null;
 
-    return dispatchTranslation({ gid, uid, replyToken, message: event.message });
+    return dispatchTranslation({
+      gid, uid, replyToken,
+      message: event.message,
+      // webhook 的 message 物件直接帶 quoteToken，不需額外呼叫 API
+      quoteToken: event.message.quoteToken || null
+    });
   }
 
   return null;

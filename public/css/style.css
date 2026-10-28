@@ -277,6 +277,31 @@ ul{list-style:none}
 .group-card[data-setup="READY"]::before{background:var(--run)}
 .group-card[data-setup="NO_LANGUAGE"]::before{background:var(--stop)}
 .group-card[data-setup="JOINED"]::before{background:var(--warn)}
+/* 封鎖 = 整條停掉，用斜紋跟「設定沒做完」區分開 */
+.group-card[data-setup="BLOCKED"]::before{
+  background:repeating-linear-gradient(
+    135deg,var(--stop) 0 4px,transparent 4px 8px
+  );
+}
+
+/* 封鎖說明條：卡片內的警示，不是獨立面板 */
+.group-alert{
+  margin:0 0 13px;padding:9px 11px;
+  border:1px solid var(--stop-line);border-radius:8px;
+  background:var(--stop-bg);color:var(--stop);
+  font-size:12.5px;line-height:1.55;
+}
+
+.group-actions .btn-unblock{
+  border-color:var(--stop-line);
+  background:var(--stop-bg);
+  color:var(--stop);
+}
+.group-actions .btn-unblock:hover{
+  border-color:var(--stop);
+  background:var(--stop);
+  color:#fff;
+}
 
 .item-card-head,.group-card-head{
   display:flex;align-items:flex-start;justify-content:space-between;
@@ -356,6 +381,8 @@ ul{list-style:none}
 .setup-badge.setup-ready{background:var(--run-bg);color:var(--run);border-color:var(--run-line)}
 .setup-badge.setup-joined{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line)}
 .setup-badge.setup-nolang{background:var(--stop-bg);color:var(--stop);border-color:var(--stop-line)}
+/* 已封鎖是「最終狀態」，給它實心底色，掃過列表時最先被看到 */
+.setup-badge.setup-blocked{background:var(--stop);color:#fff;border-color:var(--stop)}
 
 /* ===== 表單 ===== */
 .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:15px}
