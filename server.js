@@ -1946,6 +1946,28 @@ const LANG_ENGLISH_NAMES = {
   這裡只認定「短、且沒有句子結構」的內容，
   一般短句（下班、休假、加班）仍然會照常要求翻譯。
 */
+/*
+  整則訊息是不是「只有 LINE 顏文字」。
+
+  LINE 的 sticon 會以純文字 (tearing Cony) 的形式進 webhook，
+  message.type 仍然是 "text"，所以非文字型別的過濾擋不到。
+
+  條件刻意嚴格，寧可漏判也不要誤殺群組裡真正的括號訊息：
+    1. 去掉空白後，整則只由 ( ... ) 片段構成（全形括號先正規化）
+    2. 括號內只允許拉丁字母、數字、空白與少數標點 —— 中文一律不算
+    3. 至少要有連續兩個英文字母 —— (A4518)、(2m) 這種料號尺寸不算
+*/
+function isStickerOnlyText(text = "") {
+  const t = (text || "").trim();
+  if (!t) return false;
+
+  const norm = t.replace(/（/g, "(").replace(/）/g, ")");
+
+  if (!/^(\(\s*[A-Za-z0-9][A-Za-z0-9 _'\-&!?.]*\s*\)\s*)+$/.test(norm)) return false;
+
+  return /[A-Za-z]{2,}/.test(norm);
+}
+
 function looksLikeShortProperNoun(text = "") {
   const raw = String(text).trim();
   if (!raw) return false;
@@ -4216,6 +4238,27 @@ async function handleEvent(event) {
     }
 
     if (rawText.trim().startsWith("!")) return null;
+
+    /*
+      LINE 的顏文字（sticon）不是以 sticker 型別送出，而是變成純文字
+      「(tearing Cony)」這種英文名稱，所以上面的 type !== "text" 擋不到，
+      會被當成一般訊息翻譯，群組就收到「🇹🇼：（撕裂的康妮）」。
+
+      判斷條件刻意收得很窄 —— 整則訊息必須「只由括號片段構成」，
+      而且括號裡只能是拉丁字母／數字，還要有連續兩個以上的英文字母。
+      工廠群組常見的括號訊息因此都不受影響：
+        （急件）          括號內是中文           → 照常翻譯
+        (直接收費)         同上                  → 照常翻譯
+        (A4518)、(2m)     沒有連續兩個英文字母    → 照常翻譯
+        「...0963-174900 (直接收費)」整句有其他內容 → 照常翻譯
+
+      混在句子裡的顏文字（「(tearing Cony) 明天加班取消」）不剔除，
+      只是照原樣送去翻 —— 動手改掉使用者原文的風險比留著高。
+    */
+    if (isStickerOnlyText(rawText)) {
+      console.log("🙂 顏文字訊息，略過翻譯：", rawText.trim());
+      return null;
+    }
 
     return dispatchTranslation({
       gid, uid, replyToken,
