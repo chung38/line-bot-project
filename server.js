@@ -106,6 +106,18 @@ const DEBUG_TRANSLATION = process.env.DEBUG_TRANSLATION === "1";
 const JOIN_MESSAGE_MODE = process.env.JOIN_MESSAGE_MODE || "hint";
 
 /*
+  譯文要不要加上「【某某】說：」這一行。
+
+    auto   有引用區塊就省略，沒有才顯示（預設）
+    always 一律顯示（回到加 quoteToken 之前的樣子）
+    never  一律不顯示 —— 沒有引用的那幾則會看不出在翻誰的話
+*/
+const SPEAKER_LABEL_MODE = ["auto", "always", "never"]
+  .includes(process.env.SPEAKER_LABEL_MODE)
+  ? process.env.SPEAKER_LABEL_MODE
+  : "auto";
+
+/*
   機器人被移出群組時，要不要把這個群組永久列入封鎖清單。
 
   預設 false。額度是算在邀請人的 userId 上，不是算在群組上，
@@ -2683,9 +2695,32 @@ const shouldSkipSourceLanguage =
     replyText = `⚠️ 部分翻譯逾時，以下內容可能不完整。\n\n${replyText}`;
   }
 
-  const userName = await getGroupMemberDisplayName(gid, uid);
+  /*
+    有引用區塊時就不再自己標發話者。
+
+    LINE 的引用區塊已經顯示發話者的頭像、名字和一段原文，
+    再補一行「【某某】說：」是同一個資訊講兩次，還多佔一行版面。
+
+    但不能無條件拿掉 —— 下列情況不會有引用：
+      ・長譯文被切成多則，第二則以後不帶 quoteToken
+      ・webhook 沒給 quoteToken（舊版 LINE、某些訊息型態）
+    那時沒有人標出是誰說的，群組就看不懂在翻誰的話。
+
+    順帶省下一次 getGroupMemberDisplayName 的 LINE API 呼叫。
+  */
+  const showSpeaker =
+    SPEAKER_LABEL_MODE === "always" ? true :
+    SPEAKER_LABEL_MODE === "never"  ? false :
+    !quoteToken;
+
+  let speakerLine = "";
+  if (showSpeaker) {
+    const userName = await getGroupMemberDisplayName(gid, uid);
+    speakerLine = `【${userName}】說：\n`;
+  }
+
   // prefix 用於語音訊息：先顯示轉錄原文，讓群組知道機器人聽到了什麼
-  const fullText = `【${userName}】說：\n${prefix}${replyText.trim()}`;
+  const fullText = `${speakerLine}${prefix}${replyText.trim()}`;
 
   // 這裡原本用 safeReply（明確不 push）。但翻譯是背景進行的，
   // 主模型 25 秒 + fallback 25 秒之後 replyToken 很可能已失效，
