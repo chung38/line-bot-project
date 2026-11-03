@@ -10,6 +10,7 @@ import admin from "firebase-admin";
 import basicAuth from "express-basic-auth";
 import rateLimit from "express-rate-limit";
 import { Client, middleware } from "@line/bot-sdk";
+import { francAll } from "franc";
 import crypto from "node:crypto";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -727,7 +728,7 @@ function detectLang(text) {
       3. 後綴 -nya / -kan / -lah / -pun
   */
   const idKeywordHits = (
-    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|sore|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|kami|anda|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|silakan|silahkan|oke|okee|mungkin|gimana|begini|begitu|karena|kalau|atau|saja|masih|sangat|semua|setiap|sehingga|supaya|agar|lebih|kurang|banyak|sedikit|jangan|bukan|hanya|mohon|orang|pak|bapak|ibu|air|mesin|alat|barang|gudang|bagian|ruang|pintu|pipa|listrik|sampah|kotor|bersih|rusak|panas|dingin|mati|hidup|nyala|penuh|kosong|cepat|lambat|ganti|periksa|cek|masuk|keluar|selesai|sekarang|kemarin|coba|pakai|bawa|ambil|buang|perbaiki|kunci|minyak|oli|ya|kode|karyawan|nomor|nama|hasil|waktu|tempat|sedang|sendiri|punya|dapat|buat|lihat|tahu|kirim|terus|langsung|kembali|dulu|nanti|tadi)\b/gi) || []
+    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|sore|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|kami|anda|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|silakan|silahkan|oke|okee|mungkin|gimana|begini|begitu|karena|kalau|atau|saja|masih|sangat|semua|setiap|sehingga|supaya|agar|lebih|kurang|banyak|sedikit|jangan|bukan|hanya|mohon|orang|pak|bapak|ibu|air|mesin|alat|barang|gudang|bagian|ruang|pintu|pipa|listrik|sampah|kotor|bersih|rusak|panas|dingin|mati|hidup|nyala|penuh|kosong|cepat|lambat|ganti|periksa|cek|masuk|keluar|selesai|sekarang|kemarin|coba|pakai|bawa|ambil|buang|perbaiki|kunci|minyak|oli|ya|kode|karyawan|nomor|nama|hasil|waktu|tempat|sedang|sendiri|punya|dapat|buat|lihat|tahu|kirim|terus|langsung|kembali|dulu|nanti|tadi|dari|pada|kalian|kena|tetap|pake|depan|belakang|segera|mobil|motor|panggil|jemput|antar|ingat|kamar|badan|suhu|minum|makan|tidur|obat|berobat|klinik|pabrik|masker|cuaca|musim|derajat|kipas|angin|hangat|libur|teman|uang|gaji|bos|atasan|yg|sdh|dgn|utk|tdk|blm|jgn|udh|aja|bgt)\b/gi) || []
   ).length;
 
   // 印尼文構詞前綴。英文偶爾會撞到（terminal、mention、pending），
@@ -756,6 +757,54 @@ function detectLang(text) {
 
   if (latinLen === 0) return "en";
   if (chineseLen >= 1) return "zh-TW";
+
+  /*
+    走到這裡的訊息都是「純拉丁字母、關鍵字證據不足」—— 也就是
+    印尼文和英文分不出來的那一塊，先前全部預設成 en，
+    印尼文原文因此又被翻成印尼文回貼一次。
+
+    這裡交給 franc 的三元組統計裁決。只用在這一步，是因為量測過：
+    中文、泰文、越南文用字元範圍判斷本來就 100% 正確，
+    而 franc 反而會把「沒事」「Ok ạ」這種短字串判錯。
+    讓它只做 id / en 這一題，剛好補在現行方法最弱的地方。
+
+    太短的字串三元組不可靠，維持原本的 en；
+    franc 不確定（und）時也維持原本的 en，行為只會變好不會變壞。
+  */
+  const latinOnly = cleaned.replace(/[^A-Za-z\s]/g, " ").replace(/\s+/g, " ").trim();
+
+  /*
+    三道門檻，少一道都會出事（都是實測出來的）：
+
+    1. idScore >= 1 ——「Keep your body temperature stable」一個印尼文詞都沒有，
+       不該只因為三元組像印尼文就被判成印尼文。
+
+    2. 長度 >= 12 —— 太短的字串三元組統計不可靠。
+
+    3. 領先第二名 >= 0.3 —— 這道最關鍵。實測分數：
+         「Keep your body temperature stable」 ind 1.000 / eng 0.993 → 幾乎平手，不可信
+         「Mobil sdh di depan segera keluar」  ind 1.000 / eng 0.253 → 差距懸殊，可信
+       只看「誰第一」會把前者judge成印尼文。
+
+    only 裡要放 vie：不打聲調的越南文（「Xe di truoc nha may」）拉丁字母
+    長相很像印尼文，不給 franc 越南文這個選項，它只能在 ind / eng 裡挑，
+    必定挑成 ind。
+
+    判錯的方向也要挑：誤判成 id 會「跳過印尼文」，印尼籍移工就收不到訊息；
+    誤判成 en 只是多翻一次，沒人漏接。所以寧可保守退回 en。
+  */
+  if (idScore >= 1 && latinOnly.replace(/\s/g, "").length >= 12) {
+    try {
+      const ranked = francAll(latinOnly, { only: ["ind", "eng", "vie"], minLength: 10 });
+      const [top, second] = ranked;
+      if (top?.[0] === "ind" && top[1] - (second?.[1] ?? 0) >= 0.3) {
+        return "id";
+      }
+    } catch (e) {
+      // franc 失敗不該讓整則訊息處理中斷，退回原本的判斷
+      console.error("franc 判斷失敗：", e.message);
+    }
+  }
 
   return "en";
 }
