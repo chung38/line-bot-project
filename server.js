@@ -738,7 +738,7 @@ function detectLang(text) {
       3. 後綴 -nya / -kan / -lah / -pun
   */
   const idKeywordHits = (
-    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|sore|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|kami|anda|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|silakan|silahkan|oke|okee|mungkin|gimana|begini|begitu|karena|kalau|atau|saja|masih|sangat|semua|setiap|sehingga|supaya|agar|lebih|kurang|banyak|sedikit|jangan|bukan|hanya|mohon|orang|pak|bapak|ibu|air|mesin|alat|barang|gudang|bagian|ruang|pintu|pipa|listrik|sampah|kotor|bersih|rusak|panas|dingin|mati|hidup|nyala|penuh|kosong|cepat|lambat|ganti|periksa|cek|masuk|keluar|selesai|sekarang|kemarin|coba|pakai|bawa|ambil|buang|perbaiki|kunci|minyak|oli|ya|kode|karyawan|nomor|nama|hasil|waktu|tempat|sedang|sendiri|punya|dapat|buat|lihat|tahu|kirim|terus|langsung|kembali|dulu|nanti|tadi|dari|pada|kalian|kena|tetap|pake|depan|belakang|segera|mobil|motor|panggil|jemput|antar|ingat|kamar|badan|suhu|minum|makan|tidur|obat|berobat|klinik|pabrik|masker|cuaca|musim|derajat|kipas|angin|hangat|libur|teman|uang|gaji|bos|atasan|yg|sdh|dgn|utk|tdk|blm|jgn|udh|aja|bgt)\b/gi) || []
+    cleaned.match(/\b(ini|itu|dan|yang|untuk|dengan|tidak|nggak|gak|akan|ada|besok|pagi|kerja|malam|siang|sore|hari|jam|pulang|izin|sakit|iya|terima|kasih|makasih|selamat|cuti|lembur|sudah|udah|belum|belom|juga|tapi|sama|saya|aku|kamu|dia|kita|kami|anda|mereka|baru|lagi|sini|sana|mau|bisa|harus|boleh|tolong|silakan|silahkan|oke|okee|mungkin|gimana|begini|begitu|karena|kalau|atau|saja|masih|sangat|semua|setiap|sehingga|supaya|agar|lebih|kurang|banyak|sedikit|jangan|bukan|hanya|mohon|orang|pak|bapak|ibu|air|mesin|alat|barang|gudang|bagian|ruang|pintu|pipa|listrik|sampah|kotor|bersih|rusak|panas|dingin|mati|hidup|nyala|penuh|kosong|cepat|lambat|ganti|periksa|cek|masuk|keluar|selesai|sekarang|kemarin|coba|pakai|bawa|ambil|buang|perbaiki|kunci|minyak|oli|ya|kode|karyawan|nomor|nama|hasil|waktu|tempat|sedang|sendiri|punya|dapat|buat|lihat|tahu|kirim|terus|langsung|kembali|dulu|nanti|tadi|dari|pada|kalian|kena|tetap|pake|depan|belakang|segera|mobil|motor|panggil|jemput|antar|ingat|kamar|badan|suhu|minum|makan|tidur|obat|berobat|klinik|pabrik|masker|cuaca|musim|derajat|kipas|angin|hangat|libur|teman|uang|gaji|bos|atasan|yg|sdh|dgn|utk|tdk|blm|jgn|udh|aja|bgt|baik|siap|maaf|mandi|popok|susu|bubur|suap|kakek|nenek|opa|oma|duduk|bangun|jatuh|pelan|hati|cuci|sapu|kursi|roda|infus|perawat|dokter|rumah)\b/gi) || []
   ).length;
 
   // 印尼文構詞前綴。英文偶爾會撞到（terminal、mention、pending），
@@ -767,6 +767,27 @@ function detectLang(text) {
 
   if (latinLen === 0) return "en";
   if (chineseLen >= 1) return "zh-TW";
+
+  /*
+    短訊息放寬到「一個證據就夠」。
+
+    群組裡最高頻的訊息就是「Sudah」「Baik」「Siap」「Ya」這種單詞回覆 ——
+    而單詞訊息永遠湊不到兩個證據，等於這一類全部漏判成英文。
+    漏判的後果不是少翻一次，是**印尼文又被翻成印尼文回貼一次**
+    （目標語言沒有排除掉來源語言），群組裡會看到「🇮🇩：Sudah.」
+    或「🇮🇩：（翻譯失敗或逾時）」—— 後面那個特別誤導，看起來像 OpenAI 掛了，
+    其實是輸出驗證抓到「譯文跟原文一模一樣」。
+
+    三個詞以內、而且完全沒有英文證據才放行。英文的單詞回覆
+    （Yes、Thanks、Done、Noted）本來就不在印尼文詞表裡，不會互相誤傷。
+
+    位置刻意放在中文判斷「之後」—— 這點與 BOT2 不同，是有意的。
+    BOT2 放在前面，於是「收到 ya」這種中印混寫的短句會被判成印尼文，
+    印尼文就被排除在目標語言外，印尼籍同仁反而收不到。
+    走到這一行時已經確定整句沒有中文，不會有這個問題。
+  */
+  const wordCount = cleaned.split(/\s+/).filter(Boolean).length;
+  if (idScore >= 1 && enHits === 0 && wordCount <= 3) return "id";
 
   /*
     走到這裡的訊息都是「純拉丁字母、關鍵字證據不足」—— 也就是
