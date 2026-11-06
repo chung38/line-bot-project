@@ -119,6 +119,16 @@ const SPEAKER_LABEL_MODE = ["auto", "always", "never"]
   : "auto";
 
 /*
+  純粹的 OK 類回應（ok / OK / Oke / okay…）要不要略過翻譯，預設開啟。
+
+  OK 在中文、泰文、越南文、印尼文的日常對話裡都是直接照用的，翻譯沒有意義：
+  浪費額度、多打幾次 OpenAI，而且機器人回一則「🇹🇼：好的 / 🇮🇩：OK」是純噪音。
+
+  設 SKIP_ACK_MESSAGES=false 可以關掉，回到每則都翻的行為。
+*/
+const SKIP_ACK_MESSAGES = process.env.SKIP_ACK_MESSAGES !== "false";
+
+/*
   機器人被移出群組時，要不要把這個群組永久列入封鎖清單。
 
   預設 false。額度是算在邀請人的 userId 上，不是算在群組上，
@@ -2015,6 +2025,45 @@ function isStickerOnlyText(text = "") {
   if (!/^(\(\s*[A-Za-z0-9][A-Za-z0-9 _'\-&!?.]*\s*\)\s*)+$/.test(norm)) return false;
 
   return /[A-Za-z]{2,}/.test(norm);
+}
+
+/*
+  整則訊息是不是「純粹的 OK 類回應」。
+
+  OK 在這套支援的五種語言裡都是直接照用的 —— 中文、泰文、越南文、印尼文的
+  日常對話都這樣寫，不需要翻譯。翻了反而有三個壞處：
+
+    1. 浪費額度（一則訊息 = 1 次，跟內容多短無關，一句 OK 跟一整段規格書一樣貴）
+    2. 每個目標語言各打一次 OpenAI
+    3. 機器人回一則「🇹🇼：好的 / 🇮🇩：OK」是純噪音，原訊息大家本來就看得懂
+
+  判斷方式：去掉標點、符號、emoji 與空白之後，剩下的必須**完全**由 ok 家族
+  的字母構成。這樣：
+
+    ok / OK / Ok / oke / okay / okey / okee / okok / ooook   → 跳過
+    OK啦                                                     → 照常翻譯（有中文）
+    Ok 明天見                                                 → 照常翻譯（有實際內容）
+    Oke pak                                                  → 照常翻譯（pak 不是 ok 家族）
+
+  刻意只收 ok 家族，不收 yes / ya / siap / noted 那些：
+
+    「ya」是印尼文的「是」，台籍幹部不見得懂
+    「siap」是印尼文的「了解」，同上
+    「noted」是英文，印尼籍同仁不見得懂
+
+  只有 OK 是真正跨語言通用的，其他都還是該翻。
+  擋過頭的後果比漏擋嚴重 —— 真正的訊息不會被翻譯，而且沒有人會知道。
+*/
+function isUniversalAck(text = "") {
+  const t = String(text ?? "").trim();
+  if (!t) return false;
+
+  // 去掉標點（\p{P}）、符號與 emoji（\p{S}）、以及所有空白
+  const stripped = t.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+  if (!stripped) return false;
+
+  // o+k+ 後面可接 e+ / ay / ey，整串可以重複（okok、ok ok）
+  return /^(o+k+(e+|ay|ey)?)+$/.test(stripped);
 }
 
 function looksLikeShortProperNoun(text = "") {
@@ -4306,6 +4355,21 @@ async function handleEvent(event) {
     */
     if (isStickerOnlyText(rawText)) {
       console.log("🙂 顏文字訊息，略過翻譯：", rawText.trim());
+      return null;
+    }
+
+    /*
+      純粹的 OK 類回應不翻譯（判定規則見 isUniversalAck 的說明）。
+
+      跟顏文字一樣擋在這裡 —— 在 dispatchTranslation 之前，
+      所以不會呼叫 OpenAI、也不會扣額度。
+      設 SKIP_ACK_MESSAGES=false 可以關掉，回到每則都翻的行為。
+
+      語音訊息的逐字稿刻意不在此範圍：走到那裡轉寫費用已經花掉了，
+      而且逐字稿本身就是使用者要看的東西。
+    */
+    if (SKIP_ACK_MESSAGES && isUniversalAck(rawText)) {
+      console.log("👌 OK 類回應，略過翻譯：", rawText.trim());
       return null;
     }
 
