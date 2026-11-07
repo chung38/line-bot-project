@@ -2731,13 +2731,22 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
     因此補上第三個條件：有中文、且完全沒有其他語言的「詞」時，
     視為中文來源。單獨的英文字母（K、X）是單位或代號，不算詞，
     所以要求連續兩個以上字母才算數。
+
+    第三個條件只要「一個」中文字就成立，不是兩個。
+    群組裡最常見的回覆就是單字的「好」「是」「對」「行」「收」「嗯」，
+    兩個字的門檻會把這一整類漏掉 —— 三個條件就全部不成立，
+    zh-TW 被加進目標語言，中文原文又被翻一次中文回貼
+    （使用者看到「🇹🇼：好」跟自己剛打的字一模一樣）。
+
+    放寬到一個字是安全的：這一條同時要求整句沒有泰文、沒有越南文聲調、
+    也沒有任何連續兩個以上的英文字母，能同時滿足的實際上只有中文訊息。
   */
   const latinWordCount = (normalizedMergedText.match(/[A-Za-z]{2,}/g) || []).length;
 
   const isChineseDominant =
     (chineseLen >= 2 && chineseRatio >= 0.45) ||
     (chineseLen >= 4 && foreignLen === 0) ||
-    (chineseLen >= 2 && thaiLen === 0 && viCharLen === 0 && latinWordCount === 0);
+    (chineseLen >= 1 && thaiLen === 0 && viCharLen === 0 && latinWordCount === 0);
 
 if (!isChineseDominant) {
   allNeededLangs.add("zh-TW");
