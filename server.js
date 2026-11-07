@@ -2741,7 +2741,24 @@ async function processTranslationInBackground(replyToken, gid, uid, masked, segm
     放寬到一個字是安全的：這一條同時要求整句沒有泰文、沒有越南文聲調、
     也沒有任何連續兩個以上的英文字母，能同時滿足的實際上只有中文訊息。
   */
-  const latinWordCount = (normalizedMergedText.match(/[A-Za-z]{2,}/g) || []).length;
+  /*
+    數單字之前先把「單位符號」拿掉。
+
+    kg / cm / ml / pcs / V / K 是單位或代號，不是外語詞。不先拿掉的話，
+    「R410a 加 2kg 不對」會因為一個 kg 就被當成「句子裡有外語」，
+    第三個條件不成立，中文原文又被翻一次中文 —— 而中文加單位
+    （加2kg、3cm、500ml、380V）在工廠訊息裡到處都是。
+
+    只認「緊接在數字後面」的短字母串，這點很重要：
+      2kg、18 kg、380V、500ml、3 pcs   → 是單位，拿掉
+      set、check、and                   → 沒有數字在前，仍然算詞
+    所以「Check 3 pcs 好」還是會被判成有外語，照常翻成中文。
+
+    上限四個字母：再長的通常是真的單字（2 boxes 的 boxes），
+    寧可保守算它是詞 —— 多翻一次中文只是囉嗦，漏翻中文則是台籍幹部看不懂。
+  */
+  const withoutUnits = normalizedMergedText.replace(/(?<=\d)\s*[A-Za-z]{1,4}\b/g, " ");
+  const latinWordCount = (withoutUnits.match(/[A-Za-z]{2,}/g) || []).length;
 
   const isChineseDominant =
     (chineseLen >= 2 && chineseRatio >= 0.45) ||
