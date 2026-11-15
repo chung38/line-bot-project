@@ -159,6 +159,19 @@ const OPENAI_MAX_COMPLETION_TOKENS = Number(
 const OPENAI_REASONING_EFFORT =
   process.env.OPENAI_REASONING_EFFORT ?? "none";
 
+/*
+  翻譯用的模型，以及輸出不合格時的備援模型。
+
+  做成環境變數是為了能「不改程式碼就換模型、出事就立刻換回來」——
+  這是正式環境在跑的服務，換模型的品質風險只有真的跑過才知道。
+
+  換模型時要注意 reasoning_effort：下面送出參數的地方用
+  !/^gpt-4/ 判斷模型吃不吃這個參數（gpt-4* 系列收到會直接回 400）。
+  新模型如果不是 gpt-4 開頭卻又不支援推理參數，就要一併調整那個判斷式。
+*/
+const TRANSLATE_MODEL = process.env.TRANSLATE_MODEL || "gpt-5.6-luna";
+const FALLBACK_MODEL = process.env.FALLBACK_MODEL || "gpt-4.1-mini";
+
 /* ===================== 語音訊息翻譯 ===================== */
 
 /*
@@ -2295,7 +2308,7 @@ async function translateWithChatGPT(
   gid = null,
   retry = 0,
   customPrompt = "",
-  modelName = "gpt-5.6-luna",
+  modelName = TRANSLATE_MODEL,
   options = {}
 ) {
   if (!text?.trim()) return text;
@@ -2467,7 +2480,7 @@ ${buildTranslationPrompt(targetLang, industry, true)}
           gid,
           retry + 1,
           fallbackPrompt,
-          "gpt-4.1-mini",
+          FALLBACK_MODEL,
           { sourceLang, primaryCacheKey }
         );
       }
@@ -2523,7 +2536,7 @@ ${buildTranslationPrompt(targetLang, industry, true)}
       console.warn("⚠️ 輸出殘留中文人名，嘗試轉寫：", { targetLang, out });
 
       const retried = await translateWithChatGPT(
-        text, targetLang, gid, retry + 1, nameFixPrompt, "gpt-4.1-mini", { sourceLang }
+        text, targetLang, gid, retry + 1, nameFixPrompt, FALLBACK_MODEL, { sourceLang }
       );
 
       const improved =
@@ -2562,7 +2575,7 @@ ${buildTranslationPrompt(targetLang, industry, true)}
         gid,
         retry + 1,
         unitFixPrompt,
-        "gpt-4.1-mini",
+        FALLBACK_MODEL,
         { sourceLang }
       );
 
@@ -2662,7 +2675,7 @@ if (beforeUrl.trim()) {
   if (!hasChinese(beforeUrl) && isSymbolOrNum(beforeUrl.trim())) {
     outLine += beforeUrl;
   } else {
-    outLine += leadingSpace + (await translateWithChatGPT(beforeUrl.trim(), targetLang, gid, 0, "", "gpt-5.6-luna", { sourceLang })).trim() + trailingSpace;
+    outLine += leadingSpace + (await translateWithChatGPT(beforeUrl.trim(), targetLang, gid, 0, "", TRANSLATE_MODEL, { sourceLang })).trim() + trailingSpace;
   }
 }
 outLine += urlMatch[0];
@@ -2676,7 +2689,7 @@ if (afterLastUrl.trim()) {
   if (!hasChinese(afterLastUrl) && isSymbolOrNum(afterLastUrl.trim())) {
     outLine += afterLastUrl;
   } else {
-    outLine += leadingSpace + (await translateWithChatGPT(afterLastUrl.trim(), targetLang, gid, 0, "", "gpt-5.6-luna", { sourceLang })).trim() + trailingSpace;
+    outLine += leadingSpace + (await translateWithChatGPT(afterLastUrl.trim(), targetLang, gid, 0, "", TRANSLATE_MODEL, { sourceLang })).trim() + trailingSpace;
   }
 }
   }
