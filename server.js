@@ -169,8 +169,18 @@ const OPENAI_REASONING_EFFORT =
   !/^gpt-4/ 判斷模型吃不吃這個參數（gpt-4* 系列收到會直接回 400）。
   新模型如果不是 gpt-4 開頭卻又不支援推理參數，就要一併調整那個判斷式。
 */
-const TRANSLATE_MODEL = process.env.TRANSLATE_MODEL || "gpt-5.6-luna";
-const FALLBACK_MODEL = process.env.FALLBACK_MODEL || "gpt-4.1-mini";
+const TRANSLATE_MODEL = process.env.OPENAI_MODEL || "gpt-5.6-luna";
+const FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || "gpt-4.1-mini";
+
+/*
+  開機就把實際生效的模型印出來。
+
+  這個專案出過一次「環境變數設了但程式沒在讀」的狀況：Render 上明明設了
+  OPENAI_MODEL，程式卻寫死在 gpt-5.6-luna，兩邊看起來都正常，
+  沒有任何地方會說出真相。換模型之後第一件事就是來 log 確認這一行。
+*/
+console.log(`🤖 翻譯模型：${TRANSLATE_MODEL}（備援 ${FALLBACK_MODEL}）` +
+  `  reasoning_effort=${OPENAI_REASONING_EFFORT || "(不送)"}`);
 
 /* ===================== 語音訊息翻譯 ===================== */
 
