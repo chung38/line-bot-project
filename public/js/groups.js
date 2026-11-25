@@ -222,14 +222,32 @@ function renderGroups() {
           <div>${item.memberCount != null ? escapeHtml(String(item.memberCount)) : `<span class="muted">未知</span>`}</div>
         </div>
 
+        <!--
+          授權者空白有兩種完全不同的原因，不能都顯示「未設定」：
+
+          一、還沒綁定。LINE 的 join 事件不會告訴機器人是誰邀請它的
+              （官方 SDK 的 Group 型別註明 userId「只有訊息事件才有」），
+              所以授權者只能等群組內有人執行 !設定 或按設定選單時才記得到。
+              顯示「未設定」會讓人以為是系統壞了，其實是還沒有人做設定。
+
+          二、綁定了但查不到名字。多半是那個人已經退出群組，
+              getGroupMemberDisplayName 就查不到了。這時授權ID 仍然有效，
+              額度也還是算在他身上，跟第一種情況要分開看。
+        -->
         <div class="group-row">
           <span class="label">授權者</span>
-          <div>${item.inviterName ? escapeHtml(item.inviterName) : `<span class="muted">未設定</span>`}</div>
+          <div>${
+            item.inviterName
+              ? escapeHtml(item.inviterName)
+              : item.inviter
+                ? `<span class="muted" title="授權ID 仍然有效，額度照算在這個人身上">查不到名稱（可能已退出群組）</span>`
+                : `<span class="muted" title="LINE 不會告知是誰把機器人加入群組，只能等群組內有人執行 !設定 時才綁定">尚未綁定 — 等群組內有人執行 !設定</span>`
+          }</div>
         </div>
 
         <div class="group-row">
           <span class="label">授權ID</span>
-          <div>${item.inviter ? escapeHtml(item.inviter) : `<span class="muted">未設定</span>`}</div>
+          <div>${item.inviter ? escapeHtml(item.inviter) : `<span class="muted">尚未綁定</span>`}</div>
         </div>
 
         <div class="group-row">
